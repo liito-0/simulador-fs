@@ -1,15 +1,18 @@
-# Exemplos 1.1 e 1.2 do enunciado
+# Demonstração de alocação, diagnóstico e compactação
 mkdir /sistema
 mkdir /sistema/logs
 create /sistema/logs/app.log --size 10KB
+create /sistema/logs/encadeado.txt --size 4KB --alloc encadeada
 fs_status --details
-# Contígua: gera fragmentação externa
+# A remoção de b deixa blocos livres separados e a alocação grande falha.
 alloc contigua
-create /a.txt --size 4KB
-create /b.txt --size 4KB
-create /c.txt --size 4KB
+create /a.txt --size 12KB
+create /b.txt --size 12KB
+create /c.txt --size 12KB
 rm /b.txt
-create /grande.bin --size 36KB
 fs_status --details
-# Encadeada (pendente - Giovanna)
-create /x.txt --size 4KB --alloc encadeada
+create /grande.bin --size 16KB
+compact
+fs_status --details
+create /grande.bin --size 16KB
+fs_status --details

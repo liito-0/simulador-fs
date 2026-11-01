@@ -58,20 +58,23 @@ class Indexada(Strategy):
 
 
 class Encadeada(Strategy):
-    """TODO (Giovanna): Alocação Encadeada (Linked List / FAT).
-
-    Ideia: os blocos podem estar espalhados; cada bloco aponta para o próximo.
-      - pegue n = disk.blocks_needed(size) blocos livres (disk.free_list()[:n]);
-      - se não houver n livres, levante DiskError("Disco cheio ...");
-      - marque com self._marcar_dados(disk, owner, data, size,
-                extra=lambda k: f"-> próximo: Bloco {data[k+1]:02d}" if k+1 < len(data) else "-> FIM");
-      - devolva {"inode": None, "data": data}.
-    (Se preferir FAT: guarde uma tabela fat[bloco] = próximo no objeto Disk.)
-    """
+    """Alocação Encadeada: cada bloco de dados aponta para o próximo."""
     nome = "encadeada"
 
     def allocate(self, disk, owner, size):
-        raise NotImplementedError("Alocação encadeada ainda não implementada (parte da Giovanna)")
+        n = disk.blocks_needed(size)
+        if n == 0:
+            return {"inode": None, "data": []}
+        livres = disk.free_list()
+        if len(livres) < n:
+            raise DiskError(f"Disco cheio: precisa de {n} blocos, só há {len(livres)} livres.")
+        data = livres[:n]
+        self._marcar_dados(
+            disk, owner, data, size,
+            extra=lambda k: (f"-> próximo: Bloco {data[k + 1]:02d}"
+                             if k + 1 < len(data) else "-> FIM"),
+        )
+        return {"inode": None, "data": data}
 
 
 STRATEGIES = {s.nome: s() for s in (Contigua, Indexada, Encadeada)}
