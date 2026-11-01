@@ -1,0 +1,216 @@
+"""Árvore de diretórios/arquivos + operações CRUD."""
+from disk import DiskError, fmt_bytes
+from allocation import STRATEGIES
+
+
+class FSError(Exception):
+    pass
+
+
+class Node:
+    def __init__(self, name, parent=None):
+        self.name, self.parent = name, parent
+
+
+class Directory(Node):
+    def __init__(self, name, parent=None):
+        super().__init__(name, parent)
+        self.children = {}
+
+
+class File(Node):
+    def __init__(self, name, parent, size, strategy):
+        super().__init__(name, parent)
+        self.size, self.strategy = size, strategy
+        self.alloc = {"inode": None, "data": []}
+
+
+class FileSystem:
+    def __init__(self, disk, strategy="indexada"):
+        if disk.total_blocks < 1:
+            raise FSError("O disco precisa de ao menos 1 bloco.")
+        self.disk = disk
+        self.strategy = strategy
+        self.root = Directory("")
+        self.cwd = self.root
+        disk.set_block(0, "INODE_RAIZ", self.root, detalhe="Diretório '/'")
+
+    # ---------- caminhos (absolutos e relativos) ----------
+    def path_of(self, node):
+        parts = []
+        while node.parent is not None:
+            parts.append(node.name)
+            node = node.parent
+        return "/" + "/".join(reversed(parts))
+
+    def _parts(self, path):
+        if not path:
+            raise FSError("Caminho vazio.")
+        return (self.root if path.startswith("/") else self.cwd), [p for p in path.split("/") if p]
+
+    def _step(self, node, p):
+        if p == ".":
+            return node
+        if p == "..":
+            return node.parent or node
+        if not isinstance(node, Directory):
+            raise FSError(f"'{node.name}' não é um diretório.")
+        if p not in node.children:
+            raise FSError(f"'{p}' não encontrado em '{self.path_of(node)}'.")
+        return node.children[p]
+
+    def resolve(self, path):
+        node, parts = self._parts(path)
+        for p in parts:
+            node = self._step(node, p)
+        return node
+
+    def resolve_parent(self, path):
+        node, parts = self._parts(path)
+        if not parts or parts[-1] in (".", ".."):
+            raise FSError(f"Nome inválido em '{path}'.")
+        for p in parts[:-1]:
+            node = self._step(node, p)
+        if not isinstance(node, Directory):
+            raise FSError("O caminho pai não é um diretório.")
+        return node, parts[-1]
+
+    def all_files(self, node=None):
+        node = node or self.root
+        for c in node.children.values():
+            if isinstance(c, File):
+                yield c
+            else:
+                yield from self.all_files(c)
+
+    # ---------- CREATE ----------
+    def mkdir(self, path, parents=False):
+        if parents:
+            node, parts = self._parts(path)
+            for p in parts:
+                if p not in node.children:
+                    node.children[p] = Directory(p, node)
+                node = self._step(node, p)
+            return
+        parent, name = self.resolve_parent(path)
+        if name in parent.children:
+            raise FSError(f"'{path}' já existe.")
+        parent.children[name] = Directory(name, parent)
+
+    def create(self, path, size, strategy=None):
+        strategy = strategy or self.strategy
+        if strategy not in STRATEGIES:
+            raise FSError(f"Estratégia desconhecida: {strategy}")
+        parent, name = self.resolve_parent(path)
+        if name in parent.children:
+            raise FSError(f"'{path}' já existe.")
+        f = File(name, parent, size, strategy)
+        f.alloc = STRATEGIES[strategy].allocate(self.disk, f, size)  # pode levantar DiskError
+        parent.children[name] = f
+        return f
+
+    # ---------- READ ----------
+    def ls(self, path="."):
+        node = self.resolve(path)
+        if isinstance(node, File):
+            return [self._linha(node)]
+        return [self._linha(c) for c in sorted(node.children.values(),
+                key=lambda n: (isinstance(n, File), n.name))]
+
+    @staticmethod
+    def _linha(n):
+        if isinstance(n, Directory):
+            return f"{n.name}/ [DIR]"
+        return f"{n.name} ({fmt_bytes(n.size)}) [ARQ]"
+
+    def read(self, path):
+        n = self.resolve(path)
+        if isinstance(n, Directory):
+            raise FSError(f"'{path}' é um diretório (use 'ls').")
+        a = n.alloc
+        return [f"Arquivo : {self.path_of(n)}",
+                f"Tamanho : {n.size} bytes ({fmt_bytes(n.size)})",
+                f"Alocação: {n.strategy}",
+                f"I-node  : {'Bloco %02d' % a['inode'] if a['inode'] is not None else '-'}",
+                f"Blocos  : {a['data']}"]
+
+    def tree(self):
+        lines = ["/"]
+
+        def rec(d, prefix):
+            items = sorted(d.children.values(), key=lambda n: (isinstance(n, File), n.name))
+            for k, n in enumerate(items):
+                last = k == len(items) - 1
+                lines.append(prefix + ("└── " if last else "├── ") + self._linha(n))
+                if isinstance(n, Directory):
+                    rec(n, prefix + ("    " if last else "│   "))
+        rec(self.root, "")
+        return "\n".join(lines)
+
+    def cd(self, path):
+        n = self.resolve(path)
+        if not isinstance(n, Directory):
+            raise FSError(f"'{path}' não é um diretório.")
+        self.cwd = n
+
+    # ---------- UPDATE ----------
+    def update(self, path, new_size):
+        f = self.resolve(path)
+        if not isinstance(f, File):
+            raise FSError("Só é possível redimensionar arquivos.")
+        snapshot, old = list(self.disk.blocks), f.alloc
+        strat = STRATEGIES[f.strategy]
+        strat.release(self.disk, old)
+        try:
+            f.alloc = strat.allocate(self.disk, f, new_size)
+            f.size = new_size
+        except (DiskError, NotImplementedError):
+            self.disk.blocks[:] = snapshot  # desfaz
+            f.alloc = old
+            raise
+
+    def move(self, src, dst):
+        """mv: renomeia ou move. Se dst é diretório existente, move para dentro dele."""
+        n = self.resolve(src)
+        if n is self.root:
+            raise FSError("Não é possível mover a raiz.")
+        try:
+            destino = self.resolve(dst)
+        except FSError:
+            destino = None
+        if isinstance(destino, Directory):
+            novo_pai, novo_nome = destino, n.name
+        else:
+            novo_pai, novo_nome = self.resolve_parent(dst)
+        p = novo_pai
+        while p is not None:
+            if p is n:
+                raise FSError("Não é possível mover um diretório para dentro de si mesmo.")
+            p = p.parent
+        if novo_nome in novo_pai.children:
+            raise FSError(f"'{novo_nome}' já existe no destino.")
+        del n.parent.children[n.name]
+        n.name, n.parent = novo_nome, novo_pai
+        novo_pai.children[novo_nome] = n
+
+    # ---------- DELETE ----------
+    def remove(self, path, recursive=False):
+        n = self.resolve(path)
+        if n is self.root:
+            raise FSError("Não é possível remover a raiz.")
+        p = self.cwd
+        while p is not None:
+            if p is n:
+                raise FSError("Não é possível remover o diretório atual (ou um pai dele).")
+            p = p.parent
+        if isinstance(n, Directory) and n.children and not recursive:
+            raise FSError(f"'{path}' não está vazio (use 'rm -r').")
+        self._liberar(n)
+        del n.parent.children[n.name]
+
+    def _liberar(self, n):
+        if isinstance(n, File):
+            STRATEGIES[n.strategy].release(self.disk, n.alloc)
+        else:
+            for c in list(n.children.values()):
+                self._liberar(c)

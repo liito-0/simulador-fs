@@ -1,0 +1,15 @@
+# Exemplos 1.1 e 1.2 do enunciado
+mkdir /sistema
+mkdir /sistema/logs
+create /sistema/logs/app.log --size 10KB
+fs_status --details
+# Contígua: gera fragmentação externa
+alloc contigua
+create /a.txt --size 4KB
+create /b.txt --size 4KB
+create /c.txt --size 4KB
+rm /b.txt
+create /grande.bin --size 36KB
+fs_status --details
+# Encadeada (pendente - Giovanna)
+create /x.txt --size 4KB --alloc encadeada
