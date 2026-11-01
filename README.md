@@ -11,8 +11,8 @@ Simulador em Python (3.8+, sem dependências) com:
 - **Diagnóstico do disco:** mapa de blocos, fragmentação interna/externa e necessidade de compactação
 
 ## Equipe
-- Seu Nome
-- Giovanna <sobrenome>
+- Miguel Monteiro
+- Giovanna Costa
 
 ## Como executar
 ```bash
