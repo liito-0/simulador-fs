@@ -2,10 +2,10 @@
 
 | Responsável | Tarefa | Onde |
 |---|---|---|
-| Seu Nome | Árvore, CRUD, disco, alocação contígua/indexada, mapa, shell | `fs.py`, `disk.py`, `allocation.py`, `main.py`, `diagnostico.mapa_disco` |
-| Giovanna | Alocação encadeada | `allocation.Encadeada` |
-| Giovanna | Relatório de fragmentação | `diagnostico.relatorio_fragmentacao` |
-| Giovanna | Compactação | `diagnostico.compactar` |
+| Miguel Monteiro | Árvore, CRUD, disco, alocação contígua/indexada, mapa, shell | `fs.py`, `disk.py`, `allocation.py`, `main.py`, `diagnostico.mapa_disco` |
+| Giovanna Costa | Alocação encadeada | `allocation.Encadeada` |
+| Giovanna Costa | Relatório de fragmentação | `diagnostico.relatorio_fragmentacao` |
+| Giovanna Costa | Compactação | `diagnostico.compactar` |
 
 Os pontos pendentes têm `TODO (Giovanna)` com dicas no docstring.
 
