@@ -7,8 +7,6 @@
 | Giovanna Costa | Relatório de fragmentação | `diagnostico.relatorio_fragmentacao` |
 | Giovanna Costa | Compactação | `diagnostico.compactar` |
 
-Os pontos pendentes têm `TODO (Giovanna)` com dicas no docstring.
-
 ## Fluxo com Git
 1. `main` fica sempre funcionando.
 2. Cada pessoa trabalha na sua branch (`giovanna/fragmentacao`, `giovanna/encadeada`, ...).
