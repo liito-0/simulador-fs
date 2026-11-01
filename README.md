@@ -56,6 +56,6 @@ Veja [CONTRIBUINDO.md](CONTRIBUINDO.md).
 - [x] Disco em blocos
 - [x] Alocação contígua e indexada
 - [x] Mapa do disco
-- [ ] Alocação encadeada
-- [ ] Relatório de fragmentação
-- [ ] Compactação
+- [x] Alocação encadeada
+- [x] Relatório de fragmentação
+- [x] Compactação
