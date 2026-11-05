@@ -1,6 +1,7 @@
 """Árvore de diretórios/arquivos + operações CRUD."""
 from disk import DiskError, fmt_bytes
 from allocation import STRATEGIES
+from io_request import IORequest
 
 
 class FSError(Exception):
@@ -31,6 +32,7 @@ class FileSystem:
             raise FSError("O disco precisa de ao menos 1 bloco.")
         self.disk = disk
         self.strategy = strategy
+        self.io_queue = []
         self.root = Directory("")
         self.cwd = self.root
         disk.set_block(0, "INODE_RAIZ", self.root, detalhe="Diretório '/'")
@@ -83,6 +85,14 @@ class FileSystem:
             else:
                 yield from self.all_files(c)
 
+    def _enqueue_io(self, op, node):
+        alloc = node.alloc
+        blocks = ([alloc["inode"]] if alloc["inode"] is not None else []) + alloc["data"]
+        owner = self.path_of(node)
+        self.io_queue.extend(
+            IORequest(op, block, self.disk.track_of(block), owner) for block in blocks
+        )
+
     # ---------- CREATE ----------
     def mkdir(self, path, parents=False):
         if parents:
@@ -107,6 +117,7 @@ class FileSystem:
         f = File(name, parent, size, strategy)
         f.alloc = STRATEGIES[strategy].allocate(self.disk, f, size)  # pode levantar DiskError
         parent.children[name] = f
+        self._enqueue_io("W", f)
         return f
 
     # ---------- READ ----------
@@ -128,6 +139,7 @@ class FileSystem:
         if isinstance(n, Directory):
             raise FSError(f"'{path}' é um diretório (use 'ls').")
         a = n.alloc
+        self._enqueue_io("R", n)
         return [f"Arquivo : {self.path_of(n)}",
                 f"Tamanho : {n.size} bytes ({fmt_bytes(n.size)})",
                 f"Alocação: {n.strategy}",
@@ -168,6 +180,7 @@ class FileSystem:
             self.disk.blocks[:] = snapshot  # desfaz
             f.alloc = old
             raise
+        self._enqueue_io("W", f)
 
     def move(self, src, dst):
         """mv: renomeia ou move. Se dst é diretório existente, move para dentro dele."""

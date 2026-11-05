@@ -1,15 +1,21 @@
-"""Simulador de Sistema de Arquivos - ETAPA 1.  Uso: python main.py [--blocks 16] [--block-size 4096] [--alloc indexada] [--script demo.txt]"""
-import argparse, re, shlex
+"""Simulador de Sistema de Arquivos - ETAPA 2. Uso: python main.py [opções]"""
+import argparse, re, shlex, sys
 from disk import Disk, DiskError, fmt_bytes
 from fs import FileSystem, FSError
 from allocation import STRATEGIES
 import diagnostico as dx
+from scheduler import fcfs, sstf, scan, cscan, formatar
 
 AJUDA = """Comandos:
   mkdir [-p] <caminho>                 cria diretório
   create <caminho> --size 10KB [--alloc contigua|encadeada|indexada]
+  write_file <caminho> --size 8KB [--alloc ...] cria arquivo e registra E/S
   ls [caminho] | cd <caminho> | pwd | tree
   read <arquivo>                       mostra metadados e blocos
+  read_file <arquivo>                  lê arquivo e registra E/S
+  io_queue | io_clear                  lista ou limpa requisições de E/S
+  disk_sched <fcfs|sstf|scan|cscan|all> [--head N] [--dir up|down]
+            [--tracks 98,183,37,122,14] [--max-track N]
   update <arquivo> --size 20KB         redimensiona (Atualizar)
   mv <origem> <destino>                move/renomeia
   rm [-r] <caminho>                    remove arquivo/diretório
@@ -43,11 +49,102 @@ def pop_flag(args, *nomes):
     return achou
 
 
+def executar_io(fs, cmd, a):
+    """Executa comandos de E/S e escalonamento; retorna se reconheceu o comando."""
+    if cmd == "write_file":
+        size, alloc = pop_opt(a, "--size"), pop_opt(a, "--alloc")
+        if size is None or len(a) != 1:
+            raise FSError("Use: write_file <caminho> --size 8KB [--alloc estrategia]")
+        inicio = len(fs.io_queue)
+        fs.create(a[0], parse_size(size), alloc)
+        print("[ÁRVORE DO SISTEMA DE ARQUIVOS]")
+        print(fs.tree())
+        tracks = [request.track for request in fs.io_queue[inicio:]]
+        print(f"[E/S] Requisições de leitura/escrita pendentes nas trilhas: {tracks}")
+        return True
+    if cmd == "read_file":
+        if len(a) != 1:
+            raise FSError("Use: read_file <arquivo>")
+        inicio = len(fs.io_queue)
+        print("\n".join(fs.read(a[0])))
+        tracks = [request.track for request in fs.io_queue[inicio:]]
+        print(f"[E/S] Requisições de leitura/escrita pendentes nas trilhas: {tracks}")
+        return True
+    if cmd == "io_queue":
+        if a:
+            raise FSError("Use: io_queue")
+        if not fs.io_queue:
+            print("Fila de E/S vazia.")
+        else:
+            for request in fs.io_queue:
+                print(f"{request.op} | bloco {request.block} | trilha {request.track} "
+                      f"| arquivo {request.owner}")
+        return True
+    if cmd == "io_clear":
+        if a:
+            raise FSError("Use: io_clear")
+        fs.io_queue.clear()
+        print("Fila de E/S limpa.")
+        return True
+    if cmd != "disk_sched":
+        return False
+
+    if not a:
+        raise FSError("Use: disk_sched <fcfs|sstf|scan|cscan|all> [opções]")
+    algorithm = a.pop(0).lower()
+    tracks_arg = pop_opt(a, "--tracks")
+    head_arg = pop_opt(a, "--head")
+    direction = pop_opt(a, "--dir") or "up"
+    max_arg = pop_opt(a, "--max-track")
+    if a:
+        raise FSError(f"Opção desconhecida: {a[0]}")
+    if algorithm not in ("fcfs", "sstf", "scan", "cscan", "all"):
+        raise FSError(f"Algoritmo inválido: {algorithm}")
+    if direction not in ("up", "down"):
+        raise FSError("A direção deve ser 'up' ou 'down'.")
+    try:
+        head = fs.disk.head if head_arg is None else int(head_arg)
+        max_track = fs.disk.max_track if max_arg is None else int(max_arg)
+        if tracks_arg is None:
+            tracks = [request.track for request in fs.io_queue]
+        else:
+            tracks = [] if not tracks_arg else [int(track) for track in tracks_arg.split(",")]
+    except ValueError:
+        raise FSError("Cabeça, trilhas e max-track devem ser números inteiros.")
+    if max_track < 0:
+        raise FSError("max-track deve ser maior ou igual a zero.")
+    if not 0 <= head <= max_track:
+        raise FSError(f"A cabeça {head} está fora de 0..{max_track}.")
+    if any(not 0 <= track <= max_track for track in tracks):
+        raise FSError(f"Há trilhas fora de 0..{max_track}.")
+
+    algorithms = {"fcfs": fcfs, "sstf": sstf, "scan": scan, "cscan": cscan}
+    selected = list(algorithms) if algorithm == "all" else [algorithm]
+    results = {}
+    for name in selected:
+        results[name] = algorithms[name](tracks, head, max_track, direction)
+        order, movements, total = results[name]
+        formatar(name, head, order, movements, total)
+    if algorithm == "all":
+        print("--- COMPARAÇÃO DE ESCALONAMENTOS ---")
+        print("Algoritmo | Total de Movimento")
+        for name in selected:
+            label = "C-SCAN" if name == "cscan" else name.upper()
+            print(f"{label:<8} | {results[name][2]} trilhas")
+    if results[selected[-1]][0]:
+        fs.disk.head = results[selected[-1]][0][-1]
+    if tracks_arg is None:
+        fs.io_queue.clear()
+    return True
+
+
 def executar(fs, linha):
     args = shlex.split(linha)
     if not args:
         return
     cmd, a = args[0].lower(), args[1:]
+    if executar_io(fs, cmd, a):
+        return
     if cmd == "mkdir":
         p = pop_flag(a, "-p"); fs.mkdir(a[0], parents=p)
     elif cmd == "create":
@@ -100,6 +197,8 @@ def executar(fs, linha):
 
 
 def main():
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     ap = argparse.ArgumentParser()
     ap.add_argument("--blocks", type=int, default=16)
     ap.add_argument("--block-size", type=int, default=4096)
