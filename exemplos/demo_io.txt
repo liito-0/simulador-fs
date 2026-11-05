@@ -1,0 +1,7 @@
+# E/S e escalonamento de disco: fila produzida pelo arquivo criado
+write_file /dados.bin --size 8KB
+io_queue
+disk_sched all
+
+# Exemplo 2.1: comparação reproduzível com cabeça 53 e disco até a trilha 199
+disk_sched all --head 53 --max-track 199 --tracks 98,183,37,122,14
