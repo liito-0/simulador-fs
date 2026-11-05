@@ -13,12 +13,23 @@ def fmt_bytes(n):
 
 
 class Disk:
-    def __init__(self, total_blocks=16, block_size=4096):
+    def __init__(self, total_blocks=16, block_size=4096, sectors_per_track=1):
+        if sectors_per_track < 1:
+            raise DiskError("A quantidade de setores por trilha deve ser positiva.")
         self.total_blocks = total_blocks
         self.block_size = block_size
+        self.sectors_per_track = sectors_per_track
+        self.head = 0
         # Cada posição é None (livre) ou um dict:
         # {"tipo": "INODE_RAIZ"|"INODE"|"DADO", "dono": Node, "usados": int, "seq": int, "detalhe": str}
         self.blocks = [None] * total_blocks
+
+    def track_of(self, block):
+        return block // self.sectors_per_track
+
+    @property
+    def max_track(self):
+        return (self.total_blocks - 1) // self.sectors_per_track
 
     def blocks_needed(self, size):
         return math.ceil(size / self.block_size) if size > 0 else 0
