@@ -1,3 +1,9 @@
+import math
+
+
+def fmt_bytes(n):
+    return f"{n // 1024} KB" if n > 0 and n % 1024 == 0 else f"{n} B"
+
 
 class RAIDError(Exception):
     """Erro nas operações do RAID."""
@@ -243,3 +249,73 @@ class RAID5:
                 len(disk) for disk in self.disks
             ]
         }
+
+    # ---------- integração com o sistema de arquivos ----------
+    def remove(self, file_id):
+        """Esquece o arquivo (os blocos antigos continuam ocupando espaço nos discos)."""
+        self.files.pop(file_id, None)
+
+    def layout(self, file_id):
+        """Por stripe: (stripe, disco_paridade, {disco: nº do bloco do arquivo ou None})."""
+        meta = self.files[file_id]
+        n_dados = math.ceil(meta["tamanho"] / self.block_size)
+        saida, numero = [], 0
+        for st in range(meta["inicio"], meta["inicio"] + meta["stripes"]):
+            entradas = {}
+            for d in self._data_disks(st):
+                numero += 1
+                entradas[d] = numero if numero <= n_dados else None  # None = preenchimento
+            saida.append((st, self._parity_disk(st), entradas))
+        return saida
+
+    def descrever_escrita(self, file_id, rotulo, max_stripes=6):
+        """Linhas no formato do Exemplo 2.2 (distribuição de dados e paridade)."""
+        meta = self.files[file_id]
+        linhas = [f"Arranjo Ativo: RAID 5 ({self.total_disks} Discos Físicos, "
+                  f"Blocos de {fmt_bytes(self.block_size)})", "",
+                  "[E/S - DISTRIBUIÇÃO EM DISCO]"]
+        stripes = self.layout(file_id)
+        for i, (st, pd, entradas) in enumerate(stripes[:max_stripes], 1):
+            if len(stripes) > 1:
+                linhas.append(f"Stripe {i}:")
+            for d in range(self.total_disks):
+                if d == pd:
+                    nomes = ", ".join(f"Bloco {n:02d}" for n in entradas.values() if n)
+                    linhas.append(f"Disco {d + 1}: [PARIDADE : XOR({nomes})]")
+                elif entradas[d] is None:
+                    linhas.append(f"Disco {d + 1}: [Preenchimento (zeros)]")
+                else:
+                    n = entradas[d]
+                    util = min(self.block_size, meta["tamanho"] - (n - 1) * self.block_size)
+                    linhas.append(f"Disco {d + 1}: [Bloco {n:02d}: Dados de {rotulo} "
+                                  f"- Part {n} ({fmt_bytes(util)})]")
+        if len(stripes) > max_stripes:
+            linhas.append(f"... (+{len(stripes) - max_stripes} stripes omitidas)")
+        return linhas
+
+    def teste_falha(self, file_id, disk_index=1, max_stripes=6):
+        """Simula (sem alterar o arranjo) a perda de um disco e reconstrói seus blocos via XOR."""
+        if not 0 <= disk_index < self.total_disks:
+            disk_index = 0
+        linhas = ["", "[TESTE DE FALHA SIMULADO]", f"* Falha forçada no Disco {disk_index + 1}!"]
+        stripes = self.layout(file_id)
+        todos_ok = True
+        for i, (st, pd, entradas) in enumerate(stripes):
+            outros = [d for d in range(self.total_disks) if d != disk_index]
+            rec = self._xor([self.disks[d][st] for d in outros])
+            ok = rec == self.disks[disk_index][st]
+            todos_ok = todos_ok and ok
+            if i < max_stripes:
+                expr = " XOR ".join(f"Disco {d + 1}" for d in outros)
+                if disk_index == pd:
+                    alvo = "PARIDADE"
+                elif entradas[disk_index] is None:
+                    alvo = "Preenchimento"
+                else:
+                    alvo = f"Bloco {entradas[disk_index]:02d}"
+                linhas.append(f"* Recuperando {alvo} via operação XOR: ({expr}) -> "
+                              f"Reconstrução [{'OK' if ok else 'FALHOU'}]")
+        if len(stripes) > max_stripes:
+            linhas.append(f"* ... {len(stripes)} stripes verificadas no total: "
+                          f"{'todas [OK]' if todos_ok else 'HÁ ERROS'}")
+        return linhas
