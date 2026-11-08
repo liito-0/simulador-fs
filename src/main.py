@@ -6,24 +6,66 @@ from allocation import STRATEGIES
 import diagnostico as dx
 from scheduler import fcfs, sstf, scan, cscan, formatar
 
-AJUDA = """Comandos:
-  mkdir [-p] <caminho>                 cria diretório
-  create <caminho> --size 10KB [--alloc contigua|encadeada|indexada]
-  write_file <caminho> --size 8KB [--alloc ...] cria arquivo e registra E/S
-  ls [caminho] | cd <caminho> | pwd | tree
-  read <arquivo>                       mostra metadados e blocos
-  read_file <arquivo>                  lê arquivo e registra E/S
-  io_queue | io_clear                  lista ou limpa requisições de E/S
-  disk_sched <fcfs|sstf|scan|cscan|all> [--head N] [--dir up|down]
-            [--tracks 98,183,37,122,14] [--max-track N]
-  update <arquivo> --size 20KB         redimensiona (Atualizar)
-  mv <origem> <destino>                move/renomeia
-  rm [-r] <caminho>                    remove arquivo/diretório
-  alloc <estrategia>                   estratégia padrão para novos arquivos
-  fs_status [--details]                mapa do disco + fragmentação
-  compact                              compacta o disco
-  help | exit"""
+AJUDA = """
+╔══════════════════════════════════════════════════════════════╗
+║             SIMULADOR DE SISTEMA DE ARQUIVOS -               ║
+║                       MENU DE AJUDA                          ║
+╚══════════════════════════════════════════════════════════════╝
 
+[1] SISTEMA DE ARQUIVOS
+---------------------------------------------------------------
+  mkdir <caminho>       Criar diretório
+  cd <caminho>          Navegar entre diretórios
+  pwd                   Mostrar diretório atual
+  ls [caminho]          Listar arquivos e diretórios
+  tree                  Exibir hierarquia completa
+
+[2] MANIPULAÇÃO DE ARQUIVOS
+---------------------------------------------------------------
+  create <caminho>      Criar arquivo
+  read <arquivo>        Consultar metadados e blocos
+  update <arquivo>      Atualizar tamanho do arquivo
+  mv <origem> <destino> Mover ou renomear
+  rm <caminho>          Remover arquivo ou diretório
+
+[3] ARMAZENAMENTO E ALOCAÇÃO
+---------------------------------------------------------------
+  alloc <estratégia>    Definir estratégia padrão
+  fs_status             Exibir diagnóstico do disco
+  fs_status --details   Exibir mapa e fragmentação
+  compact               Compactar o disco
+
+  Estratégias disponíveis:
+  - contigua
+  - encadeada
+  - indexada
+
+[4] ENTRADA E SAÍDA (E/S)
+---------------------------------------------------------------
+  write_file <caminho>  Gravar arquivo e gerar E/S
+  read_file <arquivo>   Ler arquivo e gerar E/S
+  io_queue              Consultar fila de requisições
+  io_clear              Limpar fila de E/S
+
+[5] ESCALONAMENTO DO DISCO
+---------------------------------------------------------------
+  disk_sched fcfs       Primeiro a chegar, primeiro atendido
+  disk_sched sstf       Menor deslocamento primeiro
+  disk_sched scan       Varredura do disco
+  disk_sched cscan      Varredura circular
+  disk_sched all        Comparar todos os algoritmos
+
+  Opções:
+  --head N              Posição inicial da cabeça
+  --dir up|down         Direção do movimento
+  --tracks LISTA        Trilhas solicitadas
+  --max-track N         Limite máximo de trilhas
+
+---------------------------------------------------------------
+  help                  Exibir este menu
+  exit                  Encerrar simulador
+===============================================================
+"""
 
 def parse_size(s):
     m = re.fullmatch(r"(\d+)\s*(B|KB|MB)?", s.strip(), re.I)
