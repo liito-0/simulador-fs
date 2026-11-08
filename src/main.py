@@ -6,6 +6,7 @@ from allocation import STRATEGIES
 import diagnostico as dx
 from scheduler import fcfs, sstf, scan, cscan, formatar
 from ssd import SSD, SSDError
+from raid import RAID5, RAIDError
 
 AJUDA = """
 ╔══════════════════════════════════════════════════════════════╗
@@ -69,6 +70,14 @@ AJUDA = """
   ssd_trim <pagina>              Invalidar uma página
   ssd_status                     Exibir status do SSD
   ssd_wear                       Exibir desgaste dos blocos
+
+[7] GERENCIAMENTO RAID 5
+---------------------------------------------------------------
+  raid_write <id> <conteúdo>  Gravar arquivo no RAID
+  raid_read <id>              Ler arquivo do RAID
+  raid_fail <disco>           Simular falha de um disco
+  raid_recover <disco>        Recuperar disco com falha
+  raid_status                 Exibir estado do arranjo
 
 ---------------------------------------------------------------
   help                  Exibir este menu
@@ -268,7 +277,86 @@ def executar_ssd(ssd, cmd, a):
 
     return False
 
-def executar(fs, linha, ssd=None):
+
+def executar_raid(raid, cmd, a):
+    """Executa comandos de gerenciamento do RAID 5."""
+
+    if cmd == "raid_write":
+        if len(a) < 2:
+            raise RAIDError(
+                'Use: raid_write <id> "conteúdo"'
+            )
+
+        file_id = a[0]
+        conteudo = " ".join(a[1:])
+
+        raid.write(conteudo, file_id=file_id)
+
+        print(f"Arquivo '{file_id}' gravado no RAID 5.")
+        print("Distribuição dos blocos:")
+
+        status = raid.status()
+
+        for i, quantidade in enumerate(status["stripes_por_disco"]):
+            print(f"Disco {i}: {quantidade} blocos")
+
+        return True
+
+    if cmd == "raid_read":
+        if len(a) != 1:
+            raise RAIDError("Use: raid_read <id>")
+
+        conteudo = raid.read(a[0])
+
+        print(f"Conteúdo de '{a[0]}': {conteudo}")
+        return True
+
+    if cmd == "raid_fail":
+        if len(a) != 1:
+            raise RAIDError("Use: raid_fail <disco>")
+
+        try:
+            disco = int(a[0])
+        except ValueError:
+            raise RAIDError("O disco deve ser identificado por um número.")
+
+        raid.fail_disk(disco)
+
+        print(f"Falha simulada no disco {disco}.")
+        print("O RAID 5 continua tolerando uma falha.")
+
+        return True
+
+    if cmd == "raid_recover":
+        if len(a) != 1:
+            raise RAIDError("Use: raid_recover <disco>")
+
+        try:
+            disco = int(a[0])
+        except ValueError:
+            raise RAIDError("O disco deve ser identificado por um número.")
+
+        raid.recover(disco)
+
+        print(f"Disco {disco} reconstruído com sucesso via XOR.")
+
+        return True
+
+    if cmd == "raid_status":
+        if a:
+            raise RAIDError("Use: raid_status")
+
+        print("--- STATUS DO RAID 5 ---")
+
+        for nome, valor in raid.status().items():
+            print(f"{nome.replace('_', ' ').capitalize():<22}: {valor}")
+
+        return True
+
+    return False
+
+
+def executar(fs, linha, ssd=None, raid=None):
     args = shlex.split(linha)
     if not args:
         return
@@ -276,6 +364,8 @@ def executar(fs, linha, ssd=None):
     if executar_io(fs, cmd, a):
         return
     if ssd is not None and executar_ssd(ssd, cmd, a):
+        return
+    if raid is not None and executar_raid(raid, cmd, a):
         return
     if cmd == "mkdir":
         p = pop_flag(a, "-p"); fs.mkdir(a[0], parents=p)
@@ -339,11 +429,12 @@ def main():
     o = ap.parse_args()
     fs = FileSystem(Disk(o.blocks, o.block_size), o.alloc)
     ssd = SSD()
+    raid = RAID5(total_disks=3, block_size=4096)
 
     def rodar(l):
         try:
-            executar(fs, l, ssd)
-        except (FSError, DiskError, SSDError) as e:
+            executar(fs, l, ssd, raid)
+        except (FSError, DiskError, SSDError, RAIDError) as e:
             print(f"Erro: {e}")
         except NotImplementedError as e:
             print(f"[PENDENTE] {e}")
