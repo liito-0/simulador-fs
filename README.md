@@ -48,7 +48,7 @@ Opção extra: `--raid-disks N` define a quantidade de discos do RAID 5 (padrão
 | `read_file <arquivo>` | lê metadados e gera E/S de leitura no dispositivo ativo |
 | `update <arquivo> --size 20KB` | redimensiona (regrava os blocos) |
 | `mv <origem> <destino>` | move/renomeia |
-| `rm [-r] <caminho>` | remove (no SSD faz TRIM; no RAID remove o arquivo do arranjo) |
+| `rm [-r] <caminho>` | remove (no SSD faz TRIM; no RAID remove arquivos, inclusive ao usar `rm -r`) |
 | `alloc <estrategia>` | estratégia padrão de alocação |
 | `fs_status [--details]` | mapa do disco + fragmentação |
 | `compact` | compacta o disco |
@@ -88,6 +88,7 @@ Os discos são numerados **a partir de 1**.
 | `raid_status` | estado do arranjo |
 
 Com `--device raid5`, o `write_file` imprime automaticamente a distribuição em disco e um teste de falha simulado.
+No RAID, `mv` atualiza os identificadores dos arquivos movidos no arranjo, e `rm -r` remove do RAID todos os arquivos da árvore removida.
 
 ## Estrutura
 ```

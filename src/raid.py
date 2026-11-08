@@ -149,7 +149,8 @@ class RAID5:
             "inicio": start_stripe,
             "stripes": stripe_count,
             "tamanho": original_size,
-            "texto": is_text
+            "texto": is_text,
+            "owner": file_id
         }
 
         return file_id
@@ -254,6 +255,15 @@ class RAID5:
     def remove(self, file_id):
         """Esquece o arquivo (os blocos antigos continuam ocupando espaço nos discos)."""
         self.files.pop(file_id, None)
+
+    def rename(self, old, new):
+        """Atualiza o identificador de um arquivo sem alterar os dados gravados."""
+        if old not in self.files:
+            raise RAIDError("Arquivo não encontrado.")
+        if new != old and new in self.files:
+            raise RAIDError("Já existe um arquivo com esse identificador.")
+        if old != new:
+            self.files[new] = self.files.pop(old)
 
     def layout(self, file_id):
         """Por stripe: (stripe, disco_paridade, {disco: nº do bloco do arquivo ou None})."""

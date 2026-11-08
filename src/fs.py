@@ -2,6 +2,7 @@
 from disk import DiskError, fmt_bytes
 from allocation import STRATEGIES
 from io_request import IORequest
+from raid import RAIDError
 
 
 class FSError(Exception):
@@ -103,6 +104,10 @@ class FileSystem:
             IORequest(op, block, self.disk.track_of(block), owner) for block in blocks
         )
 
+    def _verificar_escrita_raid(self):
+        if self.device == "raid5" and self.raid is not None and self.raid.failed_disks:
+            raise FSError("Há disco com falha no RAID; recupere-o (raid_recover) antes de gravar.")
+
     @staticmethod
     def _conteudo_sintetico(owner, size):
         """O FS guarda só o tamanho; gera bytes determinísticos para o RAID distribuir."""
@@ -115,17 +120,26 @@ class FileSystem:
         try:
             if op == "W":
                 if r.failed_disks:
-                    raise RuntimeError("há disco com falha; recupere-o (raid_recover) antes de gravar")
+                    raise FSError("Há disco com falha no RAID; recupere-o (raid_recover) antes de gravar.")
                 conteudo = self._conteudo_sintetico(owner, node.size)
-                r.remove(owner)               # update: nova versão substitui a anterior
-                r.write(conteudo, file_id=owner)
-                self.dev_log.extend(r.descrever_escrita(owner, owner))
-                self.dev_log.extend(r.teste_falha(owner, disk_index=1))
+                antigo = r.files.pop(owner, None)  # update: nova versão substitui a anterior
+                try:
+                    r.write(conteudo, file_id=owner)
+                    linhas = r.descrever_escrita(owner, owner)
+                    linhas.extend(r.teste_falha(owner, disk_index=1))
+                except RAIDError:
+                    if antigo is not None:
+                        r.files[owner] = antigo
+                    else:
+                        r.files.pop(owner, None)
+                    raise
+                self.dev_log.extend(linhas)
             else:
                 if owner not in r.files:
                     self.dev_log.append(f"R | '{owner}' não está gravado no RAID")
                     return
-                esperado = self._conteudo_sintetico(owner, node.size)
+                owner_original = r.files[owner].get("owner", owner)
+                esperado = self._conteudo_sintetico(owner_original, node.size)
                 dados = r.read(owner)
                 dados = dados.encode("utf-8") if isinstance(dados, str) else dados
                 if r.failed_disks:
@@ -133,7 +147,11 @@ class FileSystem:
                     self.dev_log.append(f"R | Disco {d} com falha: blocos reconstruídos via XOR")
                 self.dev_log.append(f"R | {len(r.layout(owner))} stripes lidas | integridade: "
                                     f"{'[OK]' if dados == esperado else '[ERRO]'}")
-        except Exception as e:  # RAIDError etc.: não derruba o FS
+        except RAIDError:
+            raise
+        except FSError:
+            raise
+        except Exception as e:  # Outros erros do dispositivo são exibidos no log.
             self.dev_log.append(f"{op} | ERRO RAID: {e}")
 
     def _io_ssd(self, op, blocks, owner):
@@ -184,10 +202,16 @@ class FileSystem:
         parent, name = self.resolve_parent(path)
         if name in parent.children:
             raise FSError(f"'{path}' já existe.")
+        self._verificar_escrita_raid()
         f = File(name, parent, size, strategy)
         f.alloc = STRATEGIES[strategy].allocate(self.disk, f, size)  # pode levantar DiskError
         parent.children[name] = f
-        self._enqueue_io("W", f)
+        try:
+            self._enqueue_io("W", f)
+        except (FSError, RAIDError):
+            del parent.children[name]
+            STRATEGIES[strategy].release(self.disk, f.alloc)
+            raise
         return f
 
     # ---------- READ ----------
@@ -240,23 +264,27 @@ class FileSystem:
         f = self.resolve(path)
         if not isinstance(f, File):
             raise FSError("Só é possível redimensionar arquivos.")
-        snapshot, old = list(self.disk.blocks), f.alloc
+        self._verificar_escrita_raid()
+        snapshot, old, old_size = list(self.disk.blocks), f.alloc, f.size
         strat = STRATEGIES[f.strategy]
         strat.release(self.disk, old)
         try:
             f.alloc = strat.allocate(self.disk, f, new_size)
             f.size = new_size
-        except (DiskError, NotImplementedError):
+            self._enqueue_io("W", f)
+        except (DiskError, NotImplementedError, FSError, RAIDError):
             self.disk.blocks[:] = snapshot  # desfaz
             f.alloc = old
+            f.size = old_size
             raise
-        self._enqueue_io("W", f)
 
     def move(self, src, dst):
         """mv: renomeia ou move. Se dst é diretório existente, move para dentro dele."""
         n = self.resolve(src)
         if n is self.root:
             raise FSError("Não é possível mover a raiz.")
+        arquivos = list(self.all_files(n)) if isinstance(n, Directory) else [n]
+        caminhos_antigos = {arquivo: self.path_of(arquivo) for arquivo in arquivos}
         try:
             destino = self.resolve(dst)
         except FSError:
@@ -275,6 +303,11 @@ class FileSystem:
         del n.parent.children[n.name]
         n.name, n.parent = novo_nome, novo_pai
         novo_pai.children[novo_nome] = n
+        if self.device == "raid5" and self.raid is not None:
+            for arquivo, caminho_antigo in caminhos_antigos.items():
+                caminho_novo = self.path_of(arquivo)
+                if caminho_antigo in self.raid.files:
+                    self.raid.rename(caminho_antigo, caminho_novo)
 
     # ---------- DELETE ----------
     def remove(self, path, recursive=False):
