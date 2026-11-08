@@ -33,6 +33,9 @@ class FileSystem:
         self.disk = disk
         self.strategy = strategy
         self.io_queue = []
+        self.device = "hdd"      # "hdd" (fila + braço) ou "ssd" (páginas + wear leveling)
+        self.ssd = None          # instância de SSD, usada quando device == "ssd"
+        self.ssd_log = []        # eventos de E/S do SSD (texto) para o shell exibir
         self.root = Directory("")
         self.cwd = self.root
         disk.set_block(0, "INODE_RAIZ", self.root, detalhe="Diretório '/'")
@@ -89,9 +92,39 @@ class FileSystem:
         alloc = node.alloc
         blocks = ([alloc["inode"]] if alloc["inode"] is not None else []) + alloc["data"]
         owner = self.path_of(node)
+        if self.device == "ssd" and self.ssd is not None:
+            self._io_ssd(op, blocks, owner)   # SSD: sem braço, sem fila de trilhas
+            return
         self.io_queue.extend(
             IORequest(op, block, self.disk.track_of(block), owner) for block in blocks
         )
+
+    def _io_ssd(self, op, blocks, owner):
+        """Traduz blocos do FS em operações de página no SSD (bloco = página lógica)."""
+        ssd = self.ssd
+        for b in blocks:
+            try:
+                if op == "W":
+                    gc_antes, erase_antes = ssd.gc_count, list(ssd.erase_count)
+                    antiga = ssd.mapping.get(b)
+                    fisica = ssd.write(b, f"{owner}#bloco{b}")
+                    msg = (f"W | bloco {b} -> página lógica {b} -> página física {fisica} "
+                           f"(bloco SSD {ssd.block_of(fisica)})")
+                    if antiga is not None:
+                        msg += f" | invalidou página física {antiga}"
+                    if ssd.gc_count > gc_antes:
+                        apagados = [i for i, (x, y) in enumerate(zip(erase_antes, ssd.erase_count)) if y > x]
+                        msg += f" | GC: apagou bloco SSD {apagados}"
+                    self.ssd_log.append(msg)
+                else:
+                    if b in ssd.mapping:
+                        fisica = ssd.mapping[b]
+                        ssd.read(b)
+                        self.ssd_log.append(f"R | bloco {b} -> página lógica {b} -> página física {fisica}")
+                    else:
+                        self.ssd_log.append(f"R | bloco {b} -> página lógica {b} não mapeada no SSD")
+            except Exception as e:  # SSDError: não derruba o FS
+                self.ssd_log.append(f"{op} | bloco {b} -> ERRO SSD: {e}")
 
     # ---------- CREATE ----------
     def mkdir(self, path, parents=False):
@@ -223,6 +256,11 @@ class FileSystem:
 
     def _liberar(self, n):
         if isinstance(n, File):
+            if self.device == "ssd" and self.ssd is not None:
+                a = n.alloc
+                for b in ([a["inode"]] if a["inode"] is not None else []) + a["data"]:
+                    if b in self.ssd.mapping:
+                        self.ssd.trim(b)       # TRIM: páginas do arquivo removido
             STRATEGIES[n.strategy].release(self.disk, n.alloc)
         else:
             for c in list(n.children.values()):

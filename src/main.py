@@ -63,6 +63,9 @@ AJUDA = """
   --tracks LISTA        Trilhas solicitadas
   --max-track N         Limite máximo de trilhas
 
+  Iniciar com --device ssd faz o write_file/read_file gerarem E/S
+  em páginas do SSD (GC e wear leveling) no lugar da fila de trilhas.
+
 [6] GERENCIAMENTO DE SSD
 ---------------------------------------------------------------
   ssd_write <pagina> <conteúdo>  Gravar dados em uma página
@@ -109,26 +112,38 @@ def pop_flag(args, *nomes):
     return achou
 
 
+def mostrar_io(fs, inicio, inicio_ssd):
+    """Mostra o resultado da E/S conforme o dispositivo (HDD ou SSD)."""
+    if fs.device == "ssd":
+        print("[E/S - SSD] Operações em páginas (sem movimento de braço):")
+        for linha in fs.ssd_log[inicio_ssd:]:
+            print("  " + linha)
+        desgaste = ", ".join(f"B{i}:{n}" for i, n in enumerate(fs.ssd.erase_count))
+        print(f"[WEAR LEVELING] Apagamentos por bloco: {desgaste}")
+        return
+    tracks = [request.track for request in fs.io_queue[inicio:]]
+    print(f"[E/S] Requisições de leitura/escrita pendentes nas trilhas: {tracks}")
+    print(f"Posição atual da cabeça de leitura: Trilha {fs.disk.head}")
+
+
 def executar_io(fs, cmd, a):
     """Executa comandos de E/S e escalonamento; retorna se reconheceu o comando."""
     if cmd == "write_file":
         size, alloc = pop_opt(a, "--size"), pop_opt(a, "--alloc")
         if size is None or len(a) != 1:
             raise FSError("Use: write_file <caminho> --size 8KB [--alloc estrategia]")
-        inicio = len(fs.io_queue)
+        inicio, inicio_ssd = len(fs.io_queue), len(fs.ssd_log)
         fs.create(a[0], parse_size(size), alloc)
         print("[ÁRVORE DO SISTEMA DE ARQUIVOS]")
         print(fs.tree())
-        tracks = [request.track for request in fs.io_queue[inicio:]]
-        print(f"[E/S] Requisições de leitura/escrita pendentes nas trilhas: {tracks}")
+        mostrar_io(fs, inicio, inicio_ssd)
         return True
     if cmd == "read_file":
         if len(a) != 1:
             raise FSError("Use: read_file <arquivo>")
-        inicio = len(fs.io_queue)
+        inicio, inicio_ssd = len(fs.io_queue), len(fs.ssd_log)
         print("\n".join(fs.read(a[0])))
-        tracks = [request.track for request in fs.io_queue[inicio:]]
-        print(f"[E/S] Requisições de leitura/escrita pendentes nas trilhas: {tracks}")
+        mostrar_io(fs, inicio, inicio_ssd)
         return True
     if cmd == "io_queue":
         if a:
@@ -149,6 +164,10 @@ def executar_io(fs, cmd, a):
     if cmd != "disk_sched":
         return False
 
+    if fs.device == "ssd" and "--tracks" not in a:
+        print("Dispositivo SSD: não há braço de disco. Use ssd_status/ssd_wear "
+              "ou --device hdd para escalonar.")
+        return True
     if not a:
         raise FSError("Use: disk_sched <fcfs|sstf|scan|cscan|all> [opções]")
     algorithm = a.pop(0).lower()
@@ -389,7 +408,10 @@ def executar(fs, linha, ssd=None, raid=None):
         size = pop_opt(a, "--size")
         if size is None:
             raise FSError("Use: update <arquivo> --size 20KB")
+        inicio_ssd = len(fs.ssd_log)
         fs.update(a[0], parse_size(size)); print("Atualizado.")
+        if fs.device == "ssd":
+            mostrar_io(fs, 0, inicio_ssd)
     elif cmd in ("mv", "rename"):
         fs.move(a[0], a[1])
     elif cmd in ("rm", "rmdir"):
@@ -425,10 +447,13 @@ def main():
     ap.add_argument("--blocks", type=int, default=16)
     ap.add_argument("--block-size", type=int, default=4096)
     ap.add_argument("--alloc", default="indexada", choices=list(STRATEGIES))
+    ap.add_argument("--device", default="hdd", choices=["hdd", "ssd"],
+                    help="dispositivo de armazenamento: hdd (braço) ou ssd (páginas)")
     ap.add_argument("--script")
     o = ap.parse_args()
     fs = FileSystem(Disk(o.blocks, o.block_size), o.alloc)
-    ssd = SSD()
+    ssd = SSD(total_blocks=max(8, o.blocks // 4 + 2), pages_per_block=4)
+    fs.device, fs.ssd = o.device, ssd
     raid = RAID5(total_disks=3, block_size=4096)
 
     def rodar(l):
