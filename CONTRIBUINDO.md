@@ -6,10 +6,12 @@
 | Giovanna Costa | Alocação encadeada | `allocation.Encadeada` |
 | Giovanna Costa | Relatório de fragmentação | `diagnostico.relatorio_fragmentacao` |
 | Giovanna Costa | Compactação | `diagnostico.compactar` |
+| Miguel Monteiro | Fila de E/S e escalonadores de HDD (FCFS, SSTF, SCAN, C-SCAN) | `io_request.py`, `scheduler.py`, comandos `disk_sched`/`io_queue` em `main.py` |
+| Giovanna Costa | SSD: páginas, GC, TRIM e wear leveling | `ssd.py` |
+| Giovanna Costa | RAID 5: stripes, paridade XOR, falha e recuperação | `raid.py` |
 
 ## Fluxo com Git
 1. `main` fica sempre funcionando.
-2. Cada pessoa trabalha na sua branch (`giovanna/fragmentacao`, `giovanna/encadeada`, ...).
-3. Commits pequenos e com mensagem clara (ex.: `feat: implementa alocação encadeada`).
-4. Antes de abrir Pull Request: `python -m unittest discover tests` e `python src/main.py --script exemplos/demo.txt`.
-5. A outra pessoa revisa e faz o merge.
+2. Cada pessoa trabalha na sua branch (`miguel/estapa2-escalonamento`, `giovanna/etapa2-raid`, ...).
+3. Commits pequenos e com mensagem clara (ex.: `feat: integra raid ao sistema de arquivos`).
+4. A outra pessoa revisa e faz o merge.
