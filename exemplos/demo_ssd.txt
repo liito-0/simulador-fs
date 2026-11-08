@@ -1,0 +1,15 @@
+# Uso: python src/main.py --device ssd --blocks 16 --script exemplos/demo_ssd.txt
+write_file /log.txt --size 8KB
+read_file /log.txt
+update /log.txt --size 8KB
+update /log.txt --size 8KB
+update /log.txt --size 8KB
+update /log.txt --size 8KB
+update /log.txt --size 8KB
+update /log.txt --size 8KB
+update /log.txt --size 8KB
+update /log.txt --size 8KB
+update /log.txt --size 8KB
+update /log.txt --size 8KB
+ssd_status
+ssd_wear
