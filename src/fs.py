@@ -33,9 +33,10 @@ class FileSystem:
         self.disk = disk
         self.strategy = strategy
         self.io_queue = []
-        self.device = "hdd"      # "hdd" (fila + braço) ou "ssd" (páginas + wear leveling)
+        self.device = "hdd"      # "hdd" (fila + braço), "ssd" (páginas) ou "raid5"
         self.ssd = None          # instância de SSD, usada quando device == "ssd"
-        self.ssd_log = []        # eventos de E/S do SSD (texto) para o shell exibir
+        self.raid = None         # instância de RAID5, usada quando device == "raid5"
+        self.dev_log = []        # eventos de E/S do SSD/RAID (texto) para o shell exibir
         self.root = Directory("")
         self.cwd = self.root
         disk.set_block(0, "INODE_RAIZ", self.root, detalhe="Diretório '/'")
@@ -95,9 +96,45 @@ class FileSystem:
         if self.device == "ssd" and self.ssd is not None:
             self._io_ssd(op, blocks, owner)   # SSD: sem braço, sem fila de trilhas
             return
+        if self.device == "raid5" and self.raid is not None:
+            self._io_raid(op, node, owner)
+            return
         self.io_queue.extend(
             IORequest(op, block, self.disk.track_of(block), owner) for block in blocks
         )
+
+    @staticmethod
+    def _conteudo_sintetico(owner, size):
+        """O FS guarda só o tamanho; gera bytes determinísticos para o RAID distribuir."""
+        base = f"[dados de {owner}] ".encode("utf-8")
+        return (base * (size // len(base) + 1))[:size]
+
+    def _io_raid(self, op, node, owner):
+        """Traduz a E/S do arquivo em gravação/leitura distribuída no arranjo RAID 5."""
+        r = self.raid
+        try:
+            if op == "W":
+                if r.failed_disks:
+                    raise RuntimeError("há disco com falha; recupere-o (raid_recover) antes de gravar")
+                conteudo = self._conteudo_sintetico(owner, node.size)
+                r.remove(owner)               # update: nova versão substitui a anterior
+                r.write(conteudo, file_id=owner)
+                self.dev_log.extend(r.descrever_escrita(owner, owner))
+                self.dev_log.extend(r.teste_falha(owner, disk_index=1))
+            else:
+                if owner not in r.files:
+                    self.dev_log.append(f"R | '{owner}' não está gravado no RAID")
+                    return
+                esperado = self._conteudo_sintetico(owner, node.size)
+                dados = r.read(owner)
+                dados = dados.encode("utf-8") if isinstance(dados, str) else dados
+                if r.failed_disks:
+                    d = sorted(r.failed_disks)[0] + 1
+                    self.dev_log.append(f"R | Disco {d} com falha: blocos reconstruídos via XOR")
+                self.dev_log.append(f"R | {len(r.layout(owner))} stripes lidas | integridade: "
+                                    f"{'[OK]' if dados == esperado else '[ERRO]'}")
+        except Exception as e:  # RAIDError etc.: não derruba o FS
+            self.dev_log.append(f"{op} | ERRO RAID: {e}")
 
     def _io_ssd(self, op, blocks, owner):
         """Traduz blocos do FS em operações de página no SSD (bloco = página lógica)."""
@@ -115,16 +152,16 @@ class FileSystem:
                     if ssd.gc_count > gc_antes:
                         apagados = [i for i, (x, y) in enumerate(zip(erase_antes, ssd.erase_count)) if y > x]
                         msg += f" | GC: apagou bloco SSD {apagados}"
-                    self.ssd_log.append(msg)
+                    self.dev_log.append(msg)
                 else:
                     if b in ssd.mapping:
                         fisica = ssd.mapping[b]
                         ssd.read(b)
-                        self.ssd_log.append(f"R | bloco {b} -> página lógica {b} -> página física {fisica}")
+                        self.dev_log.append(f"R | bloco {b} -> página lógica {b} -> página física {fisica}")
                     else:
-                        self.ssd_log.append(f"R | bloco {b} -> página lógica {b} não mapeada no SSD")
+                        self.dev_log.append(f"R | bloco {b} -> página lógica {b} não mapeada no SSD")
             except Exception as e:  # SSDError: não derruba o FS
-                self.ssd_log.append(f"{op} | bloco {b} -> ERRO SSD: {e}")
+                self.dev_log.append(f"{op} | bloco {b} -> ERRO SSD: {e}")
 
     # ---------- CREATE ----------
     def mkdir(self, path, parents=False):
@@ -256,6 +293,8 @@ class FileSystem:
 
     def _liberar(self, n):
         if isinstance(n, File):
+            if self.device == "raid5" and self.raid is not None:
+                self.raid.remove(self.path_of(n))
             if self.device == "ssd" and self.ssd is not None:
                 a = n.alloc
                 for b in ([a["inode"]] if a["inode"] is not None else []) + a["data"]:

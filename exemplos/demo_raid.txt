@@ -1,0 +1,10 @@
+# Uso: python src/main.py --device raid5 --blocks 32 --script exemplos/demo_raid.txt
+mkdir /dados
+write_file /dados/planilha.csv --size 8KB
+read_file /dados/planilha.csv
+write_file /dados/relatorio.pdf --size 20KB
+raid_status
+raid_fail 2
+read_file /dados/planilha.csv
+raid_recover 2
+read_file /dados/planilha.csv

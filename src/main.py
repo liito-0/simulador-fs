@@ -65,6 +65,8 @@ AJUDA = """
 
   Iniciar com --device ssd faz o write_file/read_file gerarem E/S
   em páginas do SSD (GC e wear leveling) no lugar da fila de trilhas.
+  Com --device raid5 [--raid-disks N], os arquivos são distribuídos em
+  stripes com paridade, com teste de falha de disco e reconstrução XOR.
 
 [6] GERENCIAMENTO DE SSD
 ---------------------------------------------------------------
@@ -78,7 +80,7 @@ AJUDA = """
 ---------------------------------------------------------------
   raid_write <id> <conteúdo>  Gravar arquivo no RAID
   raid_read <id>              Ler arquivo do RAID
-  raid_fail <disco>           Simular falha de um disco
+  raid_fail <disco>           Simular falha (discos numerados a partir de 1)
   raid_recover <disco>        Recuperar disco com falha
   raid_status                 Exibir estado do arranjo
 
@@ -114,9 +116,12 @@ def pop_flag(args, *nomes):
 
 def mostrar_io(fs, inicio, inicio_ssd):
     """Mostra o resultado da E/S conforme o dispositivo (HDD ou SSD)."""
+    if fs.device == "raid5":
+        print("\n".join(fs.dev_log[inicio_ssd:]))
+        return
     if fs.device == "ssd":
         print("[E/S - SSD] Operações em páginas (sem movimento de braço):")
-        for linha in fs.ssd_log[inicio_ssd:]:
+        for linha in fs.dev_log[inicio_ssd:]:
             print("  " + linha)
         desgaste = ", ".join(f"B{i}:{n}" for i, n in enumerate(fs.ssd.erase_count))
         print(f"[WEAR LEVELING] Apagamentos por bloco: {desgaste}")
@@ -132,7 +137,7 @@ def executar_io(fs, cmd, a):
         size, alloc = pop_opt(a, "--size"), pop_opt(a, "--alloc")
         if size is None or len(a) != 1:
             raise FSError("Use: write_file <caminho> --size 8KB [--alloc estrategia]")
-        inicio, inicio_ssd = len(fs.io_queue), len(fs.ssd_log)
+        inicio, inicio_ssd = len(fs.io_queue), len(fs.dev_log)
         fs.create(a[0], parse_size(size), alloc)
         print("[ÁRVORE DO SISTEMA DE ARQUIVOS]")
         print(fs.tree())
@@ -141,7 +146,7 @@ def executar_io(fs, cmd, a):
     if cmd == "read_file":
         if len(a) != 1:
             raise FSError("Use: read_file <arquivo>")
-        inicio, inicio_ssd = len(fs.io_queue), len(fs.ssd_log)
+        inicio, inicio_ssd = len(fs.io_queue), len(fs.dev_log)
         print("\n".join(fs.read(a[0])))
         mostrar_io(fs, inicio, inicio_ssd)
         return True
@@ -164,9 +169,9 @@ def executar_io(fs, cmd, a):
     if cmd != "disk_sched":
         return False
 
-    if fs.device == "ssd" and "--tracks" not in a:
-        print("Dispositivo SSD: não há braço de disco. Use ssd_status/ssd_wear "
-              "ou --device hdd para escalonar.")
+    if fs.device != "hdd" and "--tracks" not in a:
+        print(f"Dispositivo {fs.device.upper()}: não há fila de trilhas/braço para escalonar. "
+              "Use --device hdd, ou informe --tracks.")
         return True
     if not a:
         raise FSError("Use: disk_sched <fcfs|sstf|scan|cscan|all> [opções]")
@@ -339,9 +344,9 @@ def executar_raid(raid, cmd, a):
         except ValueError:
             raise RAIDError("O disco deve ser identificado por um número.")
 
-        raid.fail_disk(disco)
+        raid.fail_disk(disco - 1)   # o shell numera os discos a partir de 1
 
-        print(f"Falha simulada no disco {disco}.")
+        print(f"Falha simulada no Disco {disco}.")
         print("O RAID 5 continua tolerando uma falha.")
 
         return True
@@ -355,7 +360,7 @@ def executar_raid(raid, cmd, a):
         except ValueError:
             raise RAIDError("O disco deve ser identificado por um número.")
 
-        raid.recover(disco)
+        raid.recover(disco - 1)
 
         print(f"Disco {disco} reconstruído com sucesso via XOR.")
 
@@ -408,9 +413,9 @@ def executar(fs, linha, ssd=None, raid=None):
         size = pop_opt(a, "--size")
         if size is None:
             raise FSError("Use: update <arquivo> --size 20KB")
-        inicio_ssd = len(fs.ssd_log)
+        inicio_ssd = len(fs.dev_log)
         fs.update(a[0], parse_size(size)); print("Atualizado.")
-        if fs.device == "ssd":
+        if fs.device != "hdd":
             mostrar_io(fs, 0, inicio_ssd)
     elif cmd in ("mv", "rename"):
         fs.move(a[0], a[1])
@@ -447,14 +452,16 @@ def main():
     ap.add_argument("--blocks", type=int, default=16)
     ap.add_argument("--block-size", type=int, default=4096)
     ap.add_argument("--alloc", default="indexada", choices=list(STRATEGIES))
-    ap.add_argument("--device", default="hdd", choices=["hdd", "ssd"],
-                    help="dispositivo de armazenamento: hdd (braço) ou ssd (páginas)")
+    ap.add_argument("--device", default="hdd", choices=["hdd", "ssd", "raid5"],
+                    help="dispositivo: hdd (braço), ssd (páginas) ou raid5 (discos + paridade)")
+    ap.add_argument("--raid-disks", type=int, default=3, help="discos do RAID 5 (mínimo 3)")
     ap.add_argument("--script")
     o = ap.parse_args()
     fs = FileSystem(Disk(o.blocks, o.block_size), o.alloc)
     ssd = SSD(total_blocks=max(8, o.blocks // 4 + 2), pages_per_block=4)
     fs.device, fs.ssd = o.device, ssd
-    raid = RAID5(total_disks=3, block_size=4096)
+    raid = RAID5(total_disks=o.raid_disks, block_size=o.block_size)
+    fs.raid = raid
 
     def rodar(l):
         try:
