@@ -5,6 +5,7 @@ from fs import FileSystem, FSError
 from allocation import STRATEGIES
 import diagnostico as dx
 from scheduler import fcfs, sstf, scan, cscan, formatar
+from ssd import SSD, SSDError
 
 AJUDA = """
 ╔══════════════════════════════════════════════════════════════╗
@@ -60,6 +61,14 @@ AJUDA = """
   --dir up|down         Direção do movimento
   --tracks LISTA        Trilhas solicitadas
   --max-track N         Limite máximo de trilhas
+
+[6] GERENCIAMENTO DE SSD
+---------------------------------------------------------------
+  ssd_write <pagina> <conteúdo>  Gravar dados em uma página
+  ssd_read <pagina>              Ler dados de uma página
+  ssd_trim <pagina>              Invalidar uma página
+  ssd_status                     Exibir status do SSD
+  ssd_wear                       Exibir desgaste dos blocos
 
 ---------------------------------------------------------------
   help                  Exibir este menu
@@ -179,13 +188,94 @@ def executar_io(fs, cmd, a):
         fs.io_queue.clear()
     return True
 
+def executar_ssd(ssd, cmd, a):
+    """Executa comandos de gerenciamento do SSD."""
 
-def executar(fs, linha):
+    if cmd == "ssd_write":
+        if len(a) < 2:
+            raise SSDError(
+                "Use: ssd_write <pagina> <conteúdo>"
+            )
+
+        try:
+            pagina = int(a[0])
+        except ValueError:
+            raise SSDError("O número da página deve ser inteiro.")
+
+        conteudo = " ".join(a[1:])
+
+        fisica = ssd.write(pagina, conteudo)
+
+        print(f"Dados gravados na página lógica {pagina}.")
+        print(f"Página física utilizada: {fisica}")
+
+        return True
+
+    if cmd == "ssd_read":
+        if len(a) != 1:
+            raise SSDError("Use: ssd_read <pagina>")
+
+        try:
+            pagina = int(a[0])
+        except ValueError:
+            raise SSDError("O número da página deve ser inteiro.")
+
+        conteudo = ssd.read(pagina)
+
+        print(f"Conteúdo da página {pagina}: {conteudo}")
+        return True
+
+    if cmd == "ssd_trim":
+        if len(a) != 1:
+            raise SSDError("Use: ssd_trim <pagina>")
+
+        try:
+            pagina = int(a[0])
+        except ValueError:
+            raise SSDError("O número da página deve ser inteiro.")
+
+        ssd.trim(pagina)
+
+        print(f"Página lógica {pagina} invalidada.")
+        return True
+
+    if cmd == "ssd_status":
+        if a:
+            raise SSDError("Use: ssd_status")
+
+        status = ssd.status()
+
+        print("--- STATUS DO SSD ---")
+
+        for nome, valor in status.items():
+            print(f"{nome.replace('_', ' ').capitalize():<22}: {valor}")
+
+        return True
+
+    if cmd == "ssd_wear":
+        if a:
+            raise SSDError("Use: ssd_wear")
+
+        print("--- WEAR LEVELING ---")
+
+        for bloco in ssd.wear_report():
+            print(
+                f"Bloco {bloco['bloco']}: "
+                f"{bloco['apagamentos']} apagamentos"
+            )
+
+        return True
+
+    return False
+
+def executar(fs, linha, ssd=None):
     args = shlex.split(linha)
     if not args:
         return
     cmd, a = args[0].lower(), args[1:]
     if executar_io(fs, cmd, a):
+        return
+    if ssd is not None and executar_ssd(ssd, cmd, a):
         return
     if cmd == "mkdir":
         p = pop_flag(a, "-p"); fs.mkdir(a[0], parents=p)
@@ -248,11 +338,12 @@ def main():
     ap.add_argument("--script")
     o = ap.parse_args()
     fs = FileSystem(Disk(o.blocks, o.block_size), o.alloc)
+    ssd = SSD()
 
     def rodar(l):
         try:
-            executar(fs, l)
-        except (FSError, DiskError) as e:
+            executar(fs, l, ssd)
+        except (FSError, DiskError, SSDError) as e:
             print(f"Erro: {e}")
         except NotImplementedError as e:
             print(f"[PENDENTE] {e}")
