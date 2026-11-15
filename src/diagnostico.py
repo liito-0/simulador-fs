@@ -100,6 +100,7 @@ def relatorio_fragmentacao(fs):
 
 def compactar(fs):
     """Reorganiza os arquivos para concentrar o espaço livre no final do disco."""
+    fs.sec.exigir_kernel("compact")   # reorganiza blocos físicos: operação crítica
     d = fs.disk
     arquivos = list(fs.all_files())
 

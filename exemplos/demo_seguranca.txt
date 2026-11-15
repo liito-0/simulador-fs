@@ -1,0 +1,39 @@
+# Etapa 3 - Identidade, autenticação e modos de execução (scripts usam --password)
+# Sem sessão, nenhum comando de sistema funciona:
+ls /
+# Boot: root em MODO_KERNEL cria grupos, usuários e a estrutura do sistema
+login --user root --password root
+groupadd devs
+useradd carlos --group devs --password carlos123
+useradd ana --group admin --password ana123
+users
+groups
+shadow
+mkdir /sistema
+create /sistema/config.sys --size 4KB
+mkdir -p /home/carlos
+logout
+# Autenticação inválida é registrada
+login --user carlos --password errada
+# Usuário comum: MODO_USUARIO
+login --user carlos --password carlos123
+whoami
+mkdir /home/carlos/projetos
+create /home/carlos/segredo.txt --size 2KB
+read /home/carlos/segredo.txt
+# Operações críticas exigem MODO_KERNEL
+useradd intruso --password 1234
+compact
+alloc contigua
+raid_status
+sudo --password carlos123 compact
+logout
+# ana pertence ao grupo admin: pode elevar com sudo (senha reconfirmada)
+login --user ana --password ana123
+whoami
+sudo --password ana123 compact
+sudo --password errada compact
+whoami
+logout
+login --user root --password root
+audit_log

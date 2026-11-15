@@ -1,3 +1,4 @@
+login --user root --password root
 # Uso: python src/main.py --device raid5 --blocks 32 --script exemplos/demo_raid.txt
 mkdir /dados
 write_file /dados/planilha.csv --size 8KB
