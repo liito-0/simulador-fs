@@ -90,6 +90,14 @@ Os discos são numerados **a partir de 1**.
 Com `--device raid5`, o `write_file` imprime automaticamente a distribuição em disco e um teste de falha simulado.
 No RAID, `mv` atualiza os identificadores dos arquivos movidos no arranjo, e `rm -r` remove do RAID todos os arquivos da árvore removida.
 
+## Etapa 3: controle de acesso, criptografia e antivírus
+
+- Permissões rwx em modo octal com `chmod`, consulta por `acl` e listagem detalhada com `ls -l`. Diretórios começam em `755`, arquivos em `644`; `chown` exige MODO_KERNEL.
+- `create` e `write_file` aceitam `--content "texto"` (o tamanho é calculado em bytes); o conteúdo é gravado nos blocos lógicos do disco.
+- `encrypt_file <caminho> --key K`, `decrypt_file <caminho> --key K` e `cat <caminho> [--key K]` usam uma simulação didática de criptografia em repouso. A chave não é armazenada. Esta cifra não é apropriada para produção.
+- `antivirus_scan [caminho]` e `disk_tamper <caminho|--block N> [--data TEXTO]` exigem MODO_KERNEL. O scanner valida hashes de blocos e assinaturas fictícias.
+- O antivírus cobre somente o disco lógico (`disk.blocks`). A camada não inspeciona nem valida conteúdo diretamente no SSD ou nos discos do RAID; o comportamento de SSD/RAID permanece independente.
+
 ## Estrutura
 ```
 src/

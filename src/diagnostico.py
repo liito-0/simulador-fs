@@ -111,15 +111,38 @@ def compactar(fs):
 
     arquivos.sort(key=posicao)
     snapshot = d.blocks[:]
+    integridade = dict(fs.integridade)
     alocacoes_antigas = [(f, f.alloc) for f in arquivos]
+    alocacoes_por_arquivo = dict(alocacoes_antigas)
+    dados_antigos = {}
+    for f, alloc in alocacoes_antigas:
+        for bloco in alloc["data"]:
+            registro = d.blocks[bloco]
+            dados_antigos[(f, bloco)] = (
+                registro.get("dados") if registro else None,
+                registro.get("usados", 0) if registro else 0,
+                fs.integridade.get(bloco),
+                bloco in fs.integridade,
+            )
 
     try:
         for f in arquivos:
+            for bloco in f.alloc["data"]:
+                fs.integridade.pop(bloco, None)
             STRATEGIES[f.strategy].release(d, f.alloc)
         for f in arquivos:
             f.alloc = STRATEGIES[f.strategy].allocate(d, f, f.size)
+            for antigo, novo in zip(alocacoes_por_arquivo[f]["data"], f.alloc["data"]):
+                registro = d.blocks[novo]
+                dados, usados, hash_oficial, tinha_hash = dados_antigos[(f, antigo)]
+                registro["dados"] = dados
+                registro["usados"] = usados
+                if tinha_hash:
+                    fs.integridade[novo] = hash_oficial
     except Exception:
         d.blocks[:] = snapshot
+        fs.integridade.clear()
+        fs.integridade.update(integridade)
         for f, alloc in alocacoes_antigas:
             f.alloc = alloc
         raise

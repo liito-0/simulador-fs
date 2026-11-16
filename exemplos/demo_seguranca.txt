@@ -12,6 +12,8 @@ shadow
 mkdir /sistema
 create /sistema/config.sys --size 4KB
 mkdir -p /home/carlos
+chown carlos:devs /home/carlos
+chmod 750 /home/carlos
 logout
 # Autenticação inválida é registrada
 login --user carlos --password errada

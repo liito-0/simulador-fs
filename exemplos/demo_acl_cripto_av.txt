@@ -1,0 +1,25 @@
+# Etapa 3: ACL, criptografia e antivírus (scripts usam --password e --key)
+login --user root --password root
+groupadd devs
+useradd carlos --group devs --password carlos123
+mkdir /sistema
+mkdir /sistema/logs
+mkdir /home
+mkdir /home/carlos
+create /sistema/config.sys --content "Configuracao do sistema"
+chmod 750 /sistema/config.sys
+create /sistema/logs/app.log --content "Aplicacao iniciada"
+chown carlos:devs /home/carlos
+logout
+
+login --user carlos --password carlos123
+read_file /sistema/config.sys
+create /home/carlos/segredo.txt --content "texto confidencial"
+encrypt_file /home/carlos/segredo.txt --key chave-secreta-123
+cat /home/carlos/segredo.txt
+cat /home/carlos/segredo.txt --key chave-secreta-123
+logout
+
+login --user root --password root
+disk_tamper /sistema/logs/app.log --data alteracao-direta
+antivirus_scan /

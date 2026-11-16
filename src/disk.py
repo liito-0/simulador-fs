@@ -55,9 +55,11 @@ class Disk:
                 return start
         return None
 
-    def set_block(self, i, tipo, dono, usados=0, seq=None, detalhe=""):
+    def set_block(self, i, tipo, dono, usados=0, seq=None, detalhe="", dados=None):
+        if dados is not None and (not isinstance(dados, bytes) or len(dados) > self.block_size):
+            raise DiskError("Os dados do bloco devem ser bytes com até block_size bytes.")
         self.blocks[i] = {"tipo": tipo, "dono": dono, "usados": usados,
-                          "seq": seq, "detalhe": detalhe}
+                          "seq": seq, "detalhe": detalhe, "dados": dados}
 
     def release(self, i):
         self.blocks[i] = None
