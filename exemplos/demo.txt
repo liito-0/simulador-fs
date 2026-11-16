@@ -1,3 +1,4 @@
+login --user root --password root
 # Demonstração de alocação, diagnóstico e compactação
 mkdir /sistema
 mkdir /sistema/logs

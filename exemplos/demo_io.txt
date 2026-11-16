@@ -1,3 +1,4 @@
+login --user root --password root
 # E/S e escalonamento de disco: fila produzida pelo arquivo criado
 write_file /dados.bin --size 8KB
 io_queue

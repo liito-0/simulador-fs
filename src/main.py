@@ -1,5 +1,5 @@
-"""Simulador de Sistema de Arquivos - ETAPA 2. Uso: python main.py [opções]"""
-import argparse, re, shlex, sys
+"""Simulador de Sistema de Arquivos - ETAPA 3 (segurança). Uso: python main.py [opções]"""
+import argparse, getpass, re, shlex, sys
 from disk import Disk, DiskError, fmt_bytes
 from fs import FileSystem, FSError
 from allocation import STRATEGIES
@@ -7,6 +7,7 @@ import diagnostico as dx
 from scheduler import fcfs, sstf, scan, cscan, formatar
 from ssd import SSD, SSDError
 from raid import RAID5, RAIDError
+from seguranca import Seguranca, SecurityError, AuthError, PrivilegeError
 
 AJUDA = """
 ╔══════════════════════════════════════════════════════════════╗
@@ -83,6 +84,26 @@ AJUDA = """
   raid_fail <disco>           Simular falha (discos numerados a partir de 1)
   raid_recover <disco>        Recuperar disco com falha
   raid_status                 Exibir estado do arranjo
+
+[8] SEGURANÇA: IDENTIDADE E PRIVILÉGIOS
+---------------------------------------------------------------
+  login --user <nome> [--password S]   Autenticar (senha pedida sem eco)
+  logout                               Encerrar a sessão
+  whoami                               Usuário, grupos e modo de execução
+  users / groups                       Listar usuários / grupos
+  passwd [usuario] [--old S] [--password S]  Trocar senha
+  sudo [--password S] <comando>        Executar em MODO_KERNEL (só grupo admin)
+
+  Exigem MODO_KERNEL (root):
+  useradd <nome> [--group G] [--password S]   Criar usuário
+  userdel <nome>                       Remover usuário
+  usermod <nome> [--add-group G] [--del-group G] [--group G]
+  groupadd <nome> / groupdel <nome>    Criar / remover grupo
+  shadow                               Ver armazenamento de senhas (salt+hash)
+  audit_log                            Ver log de auditoria
+  compact, alloc, io_clear, ssd_*, raid_*   Operações críticas de sistema/hardware
+
+  Modos: MODO_USUARIO (usuários comuns) e MODO_KERNEL (root / sudo).
 
 ---------------------------------------------------------------
   help                  Exibir este menu
@@ -380,11 +401,143 @@ def executar_raid(raid, cmd, a):
     return False
 
 
-def executar(fs, linha, ssd=None, raid=None):
+# ---------- Etapa 3: segurança ----------
+SEM_LOGIN = {"help", "login"}
+KERNEL_PROPRIOS = {"useradd", "userdel", "usermod", "groupadd", "groupdel", "shadow", "audit_log"}
+KERNEL_SISTEMA = {"compact", "alloc", "io_clear"}   # + qualquer ssd_* e raid_* (acesso bruto)
+
+
+def exige_kernel(cmd):
+    return cmd in KERNEL_PROPRIOS or cmd in KERNEL_SISTEMA or cmd.startswith(("ssd_", "raid_"))
+
+
+def mascarar(linha):
+    """Esconde senhas passadas por --password/--old ao ecoar linhas de script."""
+    return re.sub(r"(--(?:password|old)\s+)(\"[^\"]*\"|'[^']*'|\S+)", r"\1****", linha)
+
+
+def pedir_senha(a, ler_senha, prompt="Senha: ", opcao="--password", confirmar=False):
+    """Senha vinda de --password (scripts) ou lida sem eco (interativo)."""
+    v = pop_opt(a, opcao)
+    if v is not None:
+        return v
+    if ler_senha is None:
+        raise SecurityError(f"Senha obrigatória: informe {opcao}.")
+    v = ler_senha(prompt)
+    if confirmar and ler_senha("Repita a senha: ") != v:
+        raise SecurityError("As senhas não conferem.")
+    return v
+
+
+def executar_seguranca(fs, cmd, a, ssd, raid, ler_senha):
+    """Comandos de identidade/privilégio; retorna se reconheceu o comando."""
+    sec = fs.sec
+    if cmd == "login":
+        nome = pop_opt(a, "--user")
+        if nome is None or any(x.startswith("--") and x != "--password" for x in a):
+            raise SecurityError("Use: login --user <nome> [--password <senha>]")
+        if sec.autenticado:
+            raise AuthError(f"Já autenticado como '{sec.usuario.nome}'. Use 'logout' antes.")
+        senha = pedir_senha(a, ler_senha)
+        u = sec.login(nome, senha)
+        print(f"Autenticado com sucesso. Usuário: '{u.nome}' | Grupo: '{u.grupo}' | Modo: {sec.modo}")
+        fs.cwd = fs.root
+        return True
+    if cmd == "logout":
+        nome = sec.usuario.nome
+        sec.logout()
+        print(f"Sessão de '{nome}' encerrada.")
+        return True
+    if cmd == "whoami":
+        print(sec.descrever())
+        return True
+    if cmd == "users":
+        print("\n".join(sec.listar_usuarios()))
+        return True
+    if cmd == "groups":
+        print("\n".join(sec.listar_grupos()))
+        return True
+    if cmd == "sudo":
+        senha = None
+        if a[:1] == ["--password"]:
+            senha, a = (a[1] if len(a) > 1 else ""), a[2:]
+        if not a:
+            raise SecurityError("Use: sudo [--password <senha>] <comando>")
+        if a[0].lower() in ("login", "logout", "sudo"):
+            raise SecurityError(f"'{a[0]}' não pode ser executado com sudo.")
+        if senha is None:
+            if ler_senha is None:
+                raise SecurityError("Senha obrigatória: use sudo --password <senha> <comando>.")
+            senha = ler_senha(f"[sudo] senha de '{sec.usuario.nome}': ")
+        with sec.sudo(senha):
+            executar(fs, shlex.join(a), ssd, raid, ler_senha)
+        return True
+    if cmd == "passwd":
+        antiga, nova = pop_opt(a, "--old"), pop_opt(a, "--password")
+        alvo = a[0] if a else sec.usuario.nome
+        if alvo == sec.usuario.nome and antiga is None:
+            antiga = pedir_senha([], ler_senha, "Senha atual: ")
+        if nova is None:
+            nova = pedir_senha([], ler_senha, "Nova senha: ", confirmar=True)
+        sec.passwd(alvo, nova, antiga)
+        print(f"Senha de '{alvo}' alterada.")
+        return True
+    if cmd == "useradd":
+        grupo, senha = pop_opt(a, "--group"), pop_opt(a, "--password")
+        if len(a) != 1:
+            raise SecurityError("Use: useradd <nome> [--group G] [--password S]")
+        sec.exigir_kernel("useradd")  # nega antes de pedir a senha do novo usuário
+        if senha is None:
+            senha = pedir_senha([], ler_senha, "Senha do novo usuário: ", confirmar=True)
+        u = sec.useradd(a[0], senha, grupo)
+        print(f"Usuário '{u.nome}' criado (uid {u.uid}, grupo '{u.grupo}').")
+        return True
+    if cmd == "userdel":
+        if len(a) != 1:
+            raise SecurityError("Use: userdel <nome>")
+        sec.userdel(a[0]); print(f"Usuário '{a[0]}' removido.")
+        return True
+    if cmd == "usermod":
+        add, rem, prim = pop_opt(a, "--add-group"), pop_opt(a, "--del-group"), pop_opt(a, "--group")
+        if len(a) != 1 or not (add or rem or prim):
+            raise SecurityError("Use: usermod <nome> [--add-group G] [--del-group G] [--group G]")
+        sec.usermod(a[0], adicionar=add, remover=rem, primario=prim)
+        print(f"Usuário '{a[0]}' atualizado.")
+        return True
+    if cmd == "groupadd":
+        if len(a) != 1:
+            raise SecurityError("Use: groupadd <nome>")
+        g = sec.groupadd(a[0]); print(f"Grupo '{g.nome}' criado (gid {g.gid}).")
+        return True
+    if cmd == "groupdel":
+        if len(a) != 1:
+            raise SecurityError("Use: groupdel <nome>")
+        sec.groupdel(a[0]); print(f"Grupo '{a[0]}' removido.")
+        return True
+    if cmd == "shadow":
+        print("[ARMAZENAMENTO DE SENHAS - nome:$algoritmo$iterações$salt$hash]")
+        print("\n".join(sec.shadow()))
+        return True
+    if cmd == "audit_log":
+        print("\n".join(sec.linhas_auditoria()) or "(vazio)")
+        return True
+    return False
+
+
+def executar(fs, linha, ssd=None, raid=None, ler_senha=None):
     args = shlex.split(linha)
     if not args:
         return
     cmd, a = args[0].lower(), args[1:]
+    # Etapa 3: autenticação e portão de privilégios antes de qualquer comando
+    if cmd not in SEM_LOGIN:
+        fs.sec.exigir_login()
+    if exige_kernel(cmd):
+        fs.sec.exigir_kernel(cmd)
+        if cmd in KERNEL_SISTEMA or cmd.startswith(("ssd_", "raid_")):
+            fs.sec.auditar("KERNEL_OP", cmd)
+    if executar_seguranca(fs, cmd, a, ssd, raid, ler_senha):
+        return
     if executar_io(fs, cmd, a):
         return
     if ssd is not None and executar_ssd(ssd, cmd, a):
@@ -456,17 +609,22 @@ def main():
                     help="dispositivo: hdd (braço), ssd (páginas) ou raid5 (discos + paridade)")
     ap.add_argument("--raid-disks", type=int, default=3, help="discos do RAID 5 (mínimo 3)")
     ap.add_argument("--script")
+    ap.add_argument("--root-password", default="root",
+                    help="senha inicial do superusuário (padrão: root; troque com 'passwd')")
     o = ap.parse_args()
-    fs = FileSystem(Disk(o.blocks, o.block_size), o.alloc)
+    sec = Seguranca(senha_root=o.root_password)   # sem sessão: exige login
+    fs = FileSystem(Disk(o.blocks, o.block_size), o.alloc, seguranca=sec)
     ssd = SSD(total_blocks=max(8, o.blocks // 4 + 2), pages_per_block=4)
     fs.device, fs.ssd = o.device, ssd
     raid = RAID5(total_disks=o.raid_disks, block_size=o.block_size)
     fs.raid = raid
 
-    def rodar(l):
+    def rodar(l, ler_senha):
         try:
-            executar(fs, l, ssd, raid)
-        except (FSError, DiskError, SSDError, RAIDError) as e:
+            executar(fs, l, ssd, raid, ler_senha)
+        except PrivilegeError as e:
+            print(e)
+        except (FSError, DiskError, SSDError, RAIDError, SecurityError) as e:
             print(f"Erro: {e}")
         except NotImplementedError as e:
             print(f"[PENDENTE] {e}")
@@ -476,17 +634,21 @@ def main():
     if o.script:
         for l in open(o.script, encoding="utf-8"):
             if l.strip() and not l.startswith("#"):
-                print(f"> {l.strip()}"); rodar(l)
+                print(f"> {mascarar(l.strip())}"); rodar(l, None)  # scripts: senha via --password
         return
-    print("Simulador de FS - digite 'help'.")
+    print("Simulador de FS - digite 'help'. Entre com: login --user <nome>")
     while True:
         try:
-            l = input(f"{fs.path_of(fs.cwd)}> ")
+            if sec.autenticado:
+                prompt = f"[{sec.usuario.nome}|{sec.modo}] {fs.path_of(fs.cwd)}> "
+            else:
+                prompt = "[deslogado]> "
+            l = input(prompt)
         except EOFError:
             break
         if l.strip().lower() in ("exit", "quit"):
             break
-        rodar(l)
+        rodar(l, getpass.getpass)
 
 
 if __name__ == "__main__":

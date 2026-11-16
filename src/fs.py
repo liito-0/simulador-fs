@@ -3,6 +3,7 @@ from disk import DiskError, fmt_bytes
 from allocation import STRATEGIES
 from io_request import IORequest
 from raid import RAIDError
+from seguranca import Seguranca
 
 
 class FSError(Exception):
@@ -12,6 +13,7 @@ class FSError(Exception):
 class Node:
     def __init__(self, name, parent=None):
         self.name, self.parent = name, parent
+        self.owner, self.group = "root", "admin"   # preenchidos pelo FS a partir da sessão
 
 
 class Directory(Node):
@@ -28,9 +30,12 @@ class File(Node):
 
 
 class FileSystem:
-    def __init__(self, disk, strategy="indexada"):
+    def __init__(self, disk, strategy="indexada", seguranca=None):
         if disk.total_blocks < 1:
             raise FSError("O disco precisa de ao menos 1 bloco.")
+        # Sem `seguranca`, uso programático: sessão root em MODO_KERNEL (compatível com Etapas 1-2).
+        # O shell passa uma instância sem sessão e exige login.
+        self.sec = seguranca or Seguranca(autologin_root=True)
         self.disk = disk
         self.strategy = strategy
         self.io_queue = []
@@ -41,6 +46,13 @@ class FileSystem:
         self.root = Directory("")
         self.cwd = self.root
         disk.set_block(0, "INODE_RAIZ", self.root, detalhe="Diretório '/'")
+
+    # ---------- identidade ----------
+    def _atribuir_dono(self, node):
+        """Novo nó pertence ao usuário efetivo da sessão e ao grupo primário dele."""
+        u = self.sec.efetivo
+        node.owner, node.group = u.nome, u.grupo
+        return node
 
     # ---------- caminhos (absolutos e relativos) ----------
     def path_of(self, node):
@@ -183,19 +195,21 @@ class FileSystem:
 
     # ---------- CREATE ----------
     def mkdir(self, path, parents=False):
+        self.sec.exigir_login()
         if parents:
             node, parts = self._parts(path)
             for p in parts:
                 if p not in node.children:
-                    node.children[p] = Directory(p, node)
+                    node.children[p] = self._atribuir_dono(Directory(p, node))
                 node = self._step(node, p)
             return
         parent, name = self.resolve_parent(path)
         if name in parent.children:
             raise FSError(f"'{path}' já existe.")
-        parent.children[name] = Directory(name, parent)
+        parent.children[name] = self._atribuir_dono(Directory(name, parent))
 
     def create(self, path, size, strategy=None):
+        self.sec.exigir_login()
         strategy = strategy or self.strategy
         if strategy not in STRATEGIES:
             raise FSError(f"Estratégia desconhecida: {strategy}")
@@ -203,7 +217,7 @@ class FileSystem:
         if name in parent.children:
             raise FSError(f"'{path}' já existe.")
         self._verificar_escrita_raid()
-        f = File(name, parent, size, strategy)
+        f = self._atribuir_dono(File(name, parent, size, strategy))
         f.alloc = STRATEGIES[strategy].allocate(self.disk, f, size)  # pode levantar DiskError
         parent.children[name] = f
         try:
@@ -216,6 +230,7 @@ class FileSystem:
 
     # ---------- READ ----------
     def ls(self, path="."):
+        self.sec.exigir_login()
         node = self.resolve(path)
         if isinstance(node, File):
             return [self._linha(node)]
@@ -229,6 +244,7 @@ class FileSystem:
         return f"{n.name} ({fmt_bytes(n.size)}) [ARQ]"
 
     def read(self, path):
+        self.sec.exigir_login()
         n = self.resolve(path)
         if isinstance(n, Directory):
             raise FSError(f"'{path}' é um diretório (use 'ls').")
@@ -238,9 +254,11 @@ class FileSystem:
                 f"Tamanho : {n.size} bytes ({fmt_bytes(n.size)})",
                 f"Alocação: {n.strategy}",
                 f"I-node  : {'Bloco %02d' % a['inode'] if a['inode'] is not None else '-'}",
-                f"Blocos  : {a['data']}"]
+                f"Blocos  : {a['data']}",
+                f"Dono    : {n.owner} (Grupo: {n.group})"]
 
     def tree(self):
+        self.sec.exigir_login()
         lines = ["/"]
 
         def rec(d, prefix):
@@ -254,6 +272,7 @@ class FileSystem:
         return "\n".join(lines)
 
     def cd(self, path):
+        self.sec.exigir_login()
         n = self.resolve(path)
         if not isinstance(n, Directory):
             raise FSError(f"'{path}' não é um diretório.")
@@ -261,6 +280,7 @@ class FileSystem:
 
     # ---------- UPDATE ----------
     def update(self, path, new_size):
+        self.sec.exigir_login()
         f = self.resolve(path)
         if not isinstance(f, File):
             raise FSError("Só é possível redimensionar arquivos.")
@@ -280,6 +300,7 @@ class FileSystem:
 
     def move(self, src, dst):
         """mv: renomeia ou move. Se dst é diretório existente, move para dentro dele."""
+        self.sec.exigir_login()
         n = self.resolve(src)
         if n is self.root:
             raise FSError("Não é possível mover a raiz.")
@@ -311,6 +332,7 @@ class FileSystem:
 
     # ---------- DELETE ----------
     def remove(self, path, recursive=False):
+        self.sec.exigir_login()
         n = self.resolve(path)
         if n is self.root:
             raise FSError("Não é possível remover a raiz.")
