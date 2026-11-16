@@ -9,6 +9,7 @@
 | Miguel Monteiro | Fila de E/S e escalonadores de HDD (FCFS, SSTF, SCAN, C-SCAN) | `io_request.py`, `scheduler.py`, comandos `disk_sched`/`io_queue` em `main.py` |
 | Giovanna Costa | SSD: páginas, GC, TRIM e wear leveling | `ssd.py` |
 | Giovanna Costa | RAID 5: stripes, paridade XOR, falha e recuperação | `raid.py` |
+| Miguel Monteiro | ACL, criptografia, anti-vírus | `acl.py`, `cripto.py`, `antivirus.py` |
 
 ## Fluxo com Git
 1. `main` fica sempre funcionando.

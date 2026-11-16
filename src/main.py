@@ -8,6 +8,8 @@ from scheduler import fcfs, sstf, scan, cscan, formatar
 from ssd import SSD, SSDError
 from raid import RAID5, RAIDError
 from seguranca import Seguranca, SecurityError, AuthError, PrivilegeError
+import antivirus
+import acl
 
 AJUDA = """
 ╔══════════════════════════════════════════════════════════════╗
@@ -105,6 +107,20 @@ AJUDA = """
 
   Modos: MODO_USUARIO (usuários comuns) e MODO_KERNEL (root / sudo).
 
+[9] CONTROLE DE ACESSO, CRIPTOGRAFIA E ANTIVÍRUS
+---------------------------------------------------------------
+  chmod <000-777> <caminho>       Alterar permissões (dono ou root)
+  chown <usuário>[:grupo] <caminho> Alterar dono/grupo (exige MODO_KERNEL)
+  acl <caminho>                   Exibir matriz rwx do objeto
+  ls -l [caminho]                 Listar permissões e dono:grupo
+  create <caminho> --content "texto" [--alloc estratégia]
+  write_file <caminho> --content "texto" [--alloc estratégia]
+  encrypt_file <caminho> --key K   Criptografar (chave pedida sem eco)
+  decrypt_file <caminho> --key K   Descriptografar (exige r e w na ACL)
+  cat <caminho> [--key K]          Ler conteúdo; ciphertext em hex sem chave
+  antivirus_scan [caminho]         Varredura (exige MODO_KERNEL)
+  disk_tamper <caminho|--block N> [--data TEXTO] (exige MODO_KERNEL)
+
 ---------------------------------------------------------------
   help                  Exibir este menu
   exit                  Encerrar simulador
@@ -155,11 +171,12 @@ def mostrar_io(fs, inicio, inicio_ssd):
 def executar_io(fs, cmd, a):
     """Executa comandos de E/S e escalonamento; retorna se reconheceu o comando."""
     if cmd == "write_file":
-        size, alloc = pop_opt(a, "--size"), pop_opt(a, "--alloc")
-        if size is None or len(a) != 1:
-            raise FSError("Use: write_file <caminho> --size 8KB [--alloc estrategia]")
+        size, alloc, content = (pop_opt(a, "--size"), pop_opt(a, "--alloc"),
+                                pop_opt(a, "--content"))
+        if (size is None and content is None) or len(a) != 1:
+            raise FSError('Use: write_file <caminho> --size 8KB ou --content "texto"')
         inicio, inicio_ssd = len(fs.io_queue), len(fs.dev_log)
-        fs.create(a[0], parse_size(size), alloc)
+        fs.create(a[0], parse_size(size) if size is not None else None, alloc, content)
         print("[ÁRVORE DO SISTEMA DE ARQUIVOS]")
         print(fs.tree())
         mostrar_io(fs, inicio, inicio_ssd)
@@ -403,7 +420,8 @@ def executar_raid(raid, cmd, a):
 
 # ---------- Etapa 3: segurança ----------
 SEM_LOGIN = {"help", "login"}
-KERNEL_PROPRIOS = {"useradd", "userdel", "usermod", "groupadd", "groupdel", "shadow", "audit_log"}
+KERNEL_PROPRIOS = {"useradd", "userdel", "usermod", "groupadd", "groupdel", "shadow",
+                   "audit_log", "chown", "antivirus_scan", "disk_tamper"}
 KERNEL_SISTEMA = {"compact", "alloc", "io_clear"}   # + qualquer ssd_* e raid_* (acesso bruto)
 
 
@@ -412,8 +430,8 @@ def exige_kernel(cmd):
 
 
 def mascarar(linha):
-    """Esconde senhas passadas por --password/--old ao ecoar linhas de script."""
-    return re.sub(r"(--(?:password|old)\s+)(\"[^\"]*\"|'[^']*'|\S+)", r"\1****", linha)
+    """Esconde senhas/chaves passadas em linhas de script."""
+    return re.sub(r"(--(?:password|old|key)\s+)(\"[^\"]*\"|'[^']*'|\S+)", r"\1****", linha)
 
 
 def pedir_senha(a, ler_senha, prompt="Senha: ", opcao="--password", confirmar=False):
@@ -524,6 +542,70 @@ def executar_seguranca(fs, cmd, a, ssd, raid, ler_senha):
     return False
 
 
+def executar_controles(fs, cmd, a, ler_senha):
+    if cmd == "chmod":
+        if len(a) != 2:
+            raise FSError("Use: chmod <000-777> <caminho>")
+        fs.chmod(a[1], a[0])
+        print(f"Permissões de '{a[1]}' alteradas para {int(a[0], 8):03o}.")
+        return True
+    if cmd == "chown":
+        if len(a) != 2:
+            raise FSError("Use: chown <usuário>[:grupo] <caminho>")
+        identidade = a[0].split(":", 1)
+        fs.chown(a[1], identidade[0], identidade[1] if len(identidade) == 2 else None)
+        print(f"Proprietário de '{a[1]}' alterado para {fs.resolve(a[1]).owner}:"
+              f"{fs.resolve(a[1]).group}.")
+        return True
+    if cmd == "acl":
+        if len(a) != 1:
+            raise FSError("Use: acl <caminho>")
+        print("\n".join(acl.matriz(fs.resolve(a[0]))))
+        return True
+    if cmd == "encrypt_file":
+        chave = pedir_senha(a, ler_senha, "Chave: ", "--key")
+        if len(a) != 1:
+            raise FSError("Use: encrypt_file <caminho> --key K")
+        print(fs.encrypt_file(a[0], chave))
+        return True
+    if cmd == "decrypt_file":
+        chave = pedir_senha(a, ler_senha, "Chave: ", "--key")
+        if len(a) != 1:
+            raise FSError("Use: decrypt_file <caminho> --key K")
+        print(fs.decrypt_file(a[0], chave))
+        return True
+    if cmd == "cat":
+        chave = pop_opt(a, "--key")
+        if len(a) != 1:
+            raise FSError("Use: cat <caminho> [--key K]")
+        print(fs.cat(a[0], chave))
+        return True
+    if cmd == "antivirus_scan":
+        if len(a) > 1:
+            raise FSError("Use: antivirus_scan [caminho]")
+        print("\n".join(antivirus.varrer(fs, a[0] if a else "/")))
+        return True
+    if cmd == "disk_tamper":
+        bloco_arg = pop_opt(a, "--block")
+        dados = pop_opt(a, "--data")
+        if bloco_arg is not None:
+            if a:
+                raise FSError("Use: disk_tamper --block N [--data TEXTO]")
+            try:
+                bloco = int(bloco_arg)
+            except ValueError:
+                raise FSError("O número do bloco deve ser inteiro.")
+            caminho = None
+        else:
+            if len(a) != 1:
+                raise FSError("Use: disk_tamper <caminho> [--data TEXTO]")
+            caminho, bloco = a[0], None
+        bloco = antivirus.adulterar(fs, caminho, bloco, dados)
+        print(f"Bloco {bloco} adulterado diretamente no disco.")
+        return True
+    return False
+
+
 def executar(fs, linha, ssd=None, raid=None, ler_senha=None):
     args = shlex.split(linha)
     if not args:
@@ -538,6 +620,8 @@ def executar(fs, linha, ssd=None, raid=None, ler_senha=None):
             fs.sec.auditar("KERNEL_OP", cmd)
     if executar_seguranca(fs, cmd, a, ssd, raid, ler_senha):
         return
+    if executar_controles(fs, cmd, a, ler_senha):
+        return
     if executar_io(fs, cmd, a):
         return
     if ssd is not None and executar_ssd(ssd, cmd, a):
@@ -547,13 +631,17 @@ def executar(fs, linha, ssd=None, raid=None, ler_senha=None):
     if cmd == "mkdir":
         p = pop_flag(a, "-p"); fs.mkdir(a[0], parents=p)
     elif cmd == "create":
-        size, alloc = pop_opt(a, "--size"), pop_opt(a, "--alloc")
-        if size is None:
-            raise FSError("Use: create <caminho> --size 10KB")
-        fs.create(a[0], parse_size(size), alloc)
+        size, alloc, content = (pop_opt(a, "--size"), pop_opt(a, "--alloc"),
+                                pop_opt(a, "--content"))
+        if (size is None and content is None) or len(a) != 1:
+            raise FSError('Use: create <caminho> --size 10KB ou --content "texto"')
+        fs.create(a[0], parse_size(size) if size is not None else None, alloc, content)
         print("[ÁRVORE DO SISTEMA DE ARQUIVOS]"); print(fs.tree())
     elif cmd == "ls":
-        print("\n".join(fs.ls(a[0] if a else ".")) or "(vazio)")
+        longo = pop_flag(a, "-l")
+        if len(a) > 1:
+            raise FSError("Use: ls [-l] [caminho]")
+        print("\n".join(fs.ls(a[0] if a else ".", long=longo)) or "(vazio)")
     elif cmd == "cd":
         fs.cd(a[0])
     elif cmd == "pwd":
@@ -561,6 +649,8 @@ def executar(fs, linha, ssd=None, raid=None, ler_senha=None):
     elif cmd == "tree":
         print("[ÁRVORE DO SISTEMA DE ARQUIVOS]"); print(fs.tree())
     elif cmd == "read":
+        if len(a) != 1:
+            raise FSError("Use: read <arquivo>")
         print("\n".join(fs.read(a[0])))
     elif cmd == "update":
         size = pop_opt(a, "--size")

@@ -153,8 +153,12 @@ class TestPrivilegios(unittest.TestCase):
 class TestIntegracaoFS(unittest.TestCase):
     def test_dono_e_grupo_dos_arquivos(self):
         fs, sec = com_usuarios()
-        sec.login("carlos", "carlos123")
+        sec.login("root", "root")
         fs.mkdir("/pasta")
+        fs.chown("/pasta", "carlos", "devs")
+        fs.chmod("/pasta", 0o755)
+        sec.logout()
+        sec.login("carlos", "carlos123")
         f = fs.create("/pasta/a.txt", 100)
         self.assertEqual((fs.resolve("/pasta").owner, f.owner, f.group), ("carlos", "carlos", "devs"))
         self.assertIn("Dono    : carlos (Grupo: devs)", fs.read("/pasta/a.txt"))
