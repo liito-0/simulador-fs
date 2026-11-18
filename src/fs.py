@@ -49,6 +49,7 @@ class FileSystem:
         self.device = "hdd"      # "hdd" (fila + braço), "ssd" (páginas) ou "raid5"
         self.ssd = None          # instância de SSD, usada quando device == "ssd"
         self.raid = None         # instância de RAID5, usada quando device == "raid5"
+        self.mem = None           # criada pelo shell ao iniciar ou no primeiro comando de memória
         self.dev_log = []        # eventos de E/S do SSD/RAID (texto) para o shell exibir
         self.root = Directory("")
         self.root.mode = 0o755

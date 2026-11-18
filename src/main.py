@@ -8,6 +8,8 @@ from scheduler import fcfs, sstf, scan, cscan, formatar
 from ssd import SSD, SSDError
 from raid import RAID5, RAIDError
 from seguranca import Seguranca, SecurityError, AuthError, PrivilegeError
+from memoria import GerenciadorMemoria
+from mem_reservada import MemoriaError
 import antivirus
 import acl
 
@@ -121,6 +123,21 @@ AJUDA = """
   antivirus_scan [caminho]         Varredura (exige MODO_KERNEL)
   disk_tamper <caminho|--block N> [--data TEXTO] (exige MODO_KERNEL)
 
+[10] GERENCIAMENTO DE MEMÓRIA
+---------------------------------------------------------------
+  create_process --name N --size 512KB --type critical|normal
+  terminate_process --name N       Encerrar processo
+  ps                               Listar processos
+  memory_status [--reserved|--virtual]  Consultar o estado da memória
+  memory_compact --reserved        Compactar região reservada (exige MODO_KERNEL)
+  memory_report                    Relatório de fragmentação
+  translate_address --process N --page K
+  execute_step --process N --instruction "LOAD_DATA Página 2"
+
+  create_process --type critical exige MODO_KERNEL.
+  Processos normais e o encerramento dos próprios processos normais
+  estão disponíveis a qualquer usuário autenticado.
+
 ---------------------------------------------------------------
   help                  Exibir este menu
   exit                  Encerrar simulador
@@ -132,6 +149,13 @@ def parse_size(s):
     if not m:
         raise FSError(f"Tamanho inválido: '{s}' (ex.: 512B, 10KB, 1MB)")
     return int(m.group(1)) * {"": 1, "B": 1, "KB": 1024, "MB": 1024 ** 2}[(m.group(2) or "").upper()]
+
+
+def parse_size_arg(s):
+    try:
+        return parse_size(s)
+    except FSError as erro:
+        raise argparse.ArgumentTypeError(str(erro))
 
 
 def pop_opt(args, nome):
@@ -422,7 +446,7 @@ def executar_raid(raid, cmd, a):
 SEM_LOGIN = {"help", "login"}
 KERNEL_PROPRIOS = {"useradd", "userdel", "usermod", "groupadd", "groupdel", "shadow",
                    "audit_log", "chown", "antivirus_scan", "disk_tamper"}
-KERNEL_SISTEMA = {"compact", "alloc", "io_clear"}   # + qualquer ssd_* e raid_* (acesso bruto)
+KERNEL_SISTEMA = {"compact", "alloc", "io_clear", "memory_compact"}   # + SSD/RAID
 
 
 def exige_kernel(cmd):
@@ -606,6 +630,178 @@ def executar_controles(fs, cmd, a, ler_senha):
     return False
 
 
+def _memoria(fs):
+    if fs.mem is None:
+        fs.mem = GerenciadorMemoria(sec=fs.sec)
+    return fs.mem
+
+
+def _linhas_virtual(linhas):
+    return linhas if isinstance(linhas, list) else str(linhas).splitlines()
+
+
+def _mostrar_relatorio_periodico(mem):
+    linhas = mem.consumir_relatorio_periodico()
+    if linhas:
+        print("\n".join(linhas))
+
+
+def executar_memoria(fs, cmd, a):
+    """Executa comandos da Etapa 4; retorna se reconheceu o comando."""
+    comandos = {
+        "create_process", "terminate_process", "ps", "memory_status",
+        "memory_compact", "memory_report", "translate_address", "execute_step",
+    }
+    if cmd not in comandos:
+        return False
+    mem = _memoria(fs)
+    if cmd == "create_process":
+        nome = pop_opt(a, "--name")
+        tamanho = pop_opt(a, "--size")
+        tipo = pop_opt(a, "--type")
+        if a or nome is None or tamanho is None or tipo is None:
+            raise FSError("Use: create_process --name N --size 512KB --type critical|normal")
+        try:
+            bytes_tamanho = parse_size(tamanho)
+        except FSError as erro:
+            raise MemoriaError(str(erro))
+        if tipo == "critical":
+            fs.sec.exigir_kernel("create_process (critical)")
+        proc = mem.criar_processo(nome, bytes_tamanho, tipo, fs.sec.efetivo.nome)
+        if proc.tipo == "critical":
+            inicio, fim = mem.reservada.alocacoes[proc.nome]
+            print("Alocado de forma contígua na Área Reservada: "
+                  f"[{mem.reservada.formatar_endereco(inicio)} até "
+                  f"{mem.reservada.formatar_endereco(fim)}] "
+                  f"({mem.reservada._kb(proc.tamanho)} KB)")
+        else:
+            linhas_virtual = mem.consumir_saida_virtual()
+            if linhas_virtual:
+                print("\n".join(_linhas_virtual(linhas_virtual)))
+        _mostrar_relatorio_periodico(mem)
+        return True
+    if cmd == "terminate_process":
+        nome = pop_opt(a, "--name")
+        if nome is None or a:
+            raise FSError("Use: terminate_process --name N")
+        proc = mem.processos.get(nome)
+        if proc is None:
+            raise MemoriaError(f"Processo '{nome}' não encontrado.")
+        proc, intervalo, linhas_virtual = mem.encerrar_processo(nome)
+        if intervalo is not None:
+            inicio, fim = intervalo
+            print(f"[ENCERRAMENTO DE PROCESSO CRÍTICO] Processo '{proc.nome}' finalizado.")
+            print(f"Área de {mem.reservada._kb(proc.tamanho)} KB no intervalo "
+                  f"[{mem.reservada.formatar_endereco(inicio)} a "
+                  f"{mem.reservada.formatar_endereco(fim)}] liberada na Área Reservada da RAM.")
+        else:
+            print(f"Processo '{proc.nome}' finalizado.")
+            if linhas_virtual:
+                print("\n".join(_linhas_virtual(linhas_virtual)))
+        _mostrar_relatorio_periodico(mem)
+        return True
+    if cmd == "ps":
+        if a:
+            raise FSError("Use: ps")
+        print(f"{'PID':<6} {'NOME':<24} {'TIPO':<10} {'TAMANHO':<12} "
+              f"{'REGIÃO':<20} DONO")
+        for proc in sorted(mem.processos.values(), key=lambda p: p.pid):
+            regiao = "Área Reservada" if proc.tipo == "critical" else "Memória Virtual"
+            tamanho = f"{mem.reservada._kb(proc.tamanho)} KB"
+            print(f"{proc.pid:<6} {proc.nome:<24} {proc.tipo:<10} "
+                  f"{tamanho:<12} {regiao:<20} {proc.dono}")
+        return True
+    if cmd == "memory_status":
+        reservada = pop_flag(a, "--reserved")
+        virtual = pop_flag(a, "--virtual")
+        if a or (reservada and virtual):
+            raise FSError("Use: memory_status [--reserved|--virtual]")
+        if reservada:
+            print("\n".join(mem.reservada.mapa()))
+            print()
+            print("\n".join(mem.reservada.diagnostico()))
+        elif virtual:
+            if mem.virtual is None:
+                print("Memória virtual: não disponível")
+            else:
+                print("\n".join(_linhas_virtual(mem.virtual.status())))
+        else:
+            usado = mem.reservada.tamanho - mem.reservada.total_livre
+            percentual = usado / mem.reservada.tamanho * 100
+            preenchido = round(percentual / 5)
+            print("--- STATUS DA MEMÓRIA ---")
+            print(f"RAM total       : {mem.reservada.formatar_endereco(mem.ram_total)}")
+            print(f"Região reservada: {mem.reservada.formatar_endereco(mem.tamanho_reservado)}")
+            print(f"Região dinâmica : {mem.reservada.formatar_endereco(mem.tamanho_dinamico)}")
+            print(f"Área reservada usada/livre: {mem.reservada._kb(usado)}/"
+                  f"{mem.reservada._kb(mem.reservada.total_livre)} KB "
+                  f"({percentual:.1f}% usada)")
+            print(f"[{'#' * preenchido}{'.' * (20 - preenchido)}]")
+            if mem.virtual is None:
+                print("Memória virtual: não disponível")
+            else:
+                print("\n".join(_linhas_virtual(mem.virtual.status())))
+        return True
+    if cmd == "memory_compact":
+        reservado = pop_flag(a, "--reserved")
+        if a or not reservado:
+            raise FSError("Use: memory_compact --reserved")
+        fs.sec.exigir_kernel("memory_compact")
+        movimentos = mem.reservada.compactar()
+        fs.sec.auditar("MEM_COMPACT", f"{len(movimentos)} processo(s) movido(s)")
+        if not movimentos:
+            print("Compactação desnecessária: não há fragmentação externa.")
+            return True
+        print("[EXECUTANDO COMPACTAÇÃO DA ÁREA RESERVADA DA RAM]")
+        print("Realocando blocos contíguos para eliminar a fragmentação externa...")
+        for nome, antigo_inicio, antigo_fim, novo_inicio, novo_fim in movimentos:
+            print(f"- Mapeamento de '{nome}': "
+                  f"[{mem.reservada.formatar_endereco(antigo_inicio)} a "
+                  f"{mem.reservada.formatar_endereco(antigo_fim)}] -> Ajustado para: "
+                  f"[{mem.reservada.formatar_endereco(novo_inicio)} a "
+                  f"{mem.reservada.formatar_endereco(novo_fim)}]")
+        print("\n--- MAPA APÓS COMPACTAÇÃO ---")
+        print("\n".join(mem.reservada.mapa()))
+        print("Resultado: Fragmentação externa eliminada. Maior bloco contíguo: "
+              f"{mem.reservada._kb(mem.reservada.maior_bloco)} KB.")
+        return True
+    if cmd == "memory_report":
+        if a:
+            raise FSError("Use: memory_report")
+        print("\n".join(mem.relatorio_fragmentacao()))
+        return True
+    if cmd in ("translate_address", "execute_step"):
+        nome = pop_opt(a, "--process")
+        if cmd == "translate_address":
+            pagina = pop_opt(a, "--page")
+            argumento = "--page K"
+        else:
+            instrucao = pop_opt(a, "--instruction")
+            argumento = '--instruction "LOAD_DATA Página 2"'
+        if a or nome is None or (pagina is None if cmd == "translate_address" else instrucao is None):
+            raise FSError(f"Use: {cmd} --process N {argumento}")
+        proc = mem.processos.get(nome)
+        if proc is None:
+            raise MemoriaError(f"Processo '{nome}' não existe.")
+        if proc.tipo != "normal":
+            raise MemoriaError(f"Processo '{nome}' não utiliza memória virtual.")
+        if mem.virtual is None:
+            raise MemoriaError(
+                "Memória virtual indisponível: módulo da parte B ainda não integrado."
+            )
+        if cmd == "translate_address":
+            try:
+                pagina = int(pagina)
+            except ValueError:
+                raise MemoriaError("A página deve ser um número inteiro.")
+            linhas = mem.virtual.traduzir(proc, pagina)
+        else:
+            linhas = mem.virtual.executar_passo(proc, instrucao)
+        print("\n".join(_linhas_virtual(linhas)))
+        return True
+    return False
+
+
 def executar(fs, linha, ssd=None, raid=None, ler_senha=None):
     args = shlex.split(linha)
     if not args:
@@ -621,6 +817,8 @@ def executar(fs, linha, ssd=None, raid=None, ler_senha=None):
     if executar_seguranca(fs, cmd, a, ssd, raid, ler_senha):
         return
     if executar_controles(fs, cmd, a, ler_senha):
+        return
+    if executar_memoria(fs, cmd, a):
         return
     if executar_io(fs, cmd, a):
         return
@@ -698,12 +896,21 @@ def main():
     ap.add_argument("--device", default="hdd", choices=["hdd", "ssd", "raid5"],
                     help="dispositivo: hdd (braço), ssd (páginas) ou raid5 (discos + paridade)")
     ap.add_argument("--raid-disks", type=int, default=3, help="discos do RAID 5 (mínimo 3)")
+    ap.add_argument("--ram", type=parse_size_arg, default=8 * 1024 ** 2)
+    ap.add_argument("--reserved", type=parse_size_arg, default=4 * 1024 ** 2)
+    ap.add_argument("--page-size", type=parse_size_arg, default=4 * 1024)
+    ap.add_argument("--report-every", type=int, default=5)
     ap.add_argument("--script")
     ap.add_argument("--root-password", default="root",
                     help="senha inicial do superusuário (padrão: root; troque com 'passwd')")
     o = ap.parse_args()
+    if o.ram <= 0 or o.reserved <= 1024 ** 2 or o.reserved >= o.ram:
+        ap.error("--ram deve ser maior que --reserved, que deve exceder 1MB.")
+    if o.page_size <= 0 or o.report_every < 0:
+        ap.error("--page-size deve ser positivo e --report-every não negativo.")
     sec = Seguranca(senha_root=o.root_password)   # sem sessão: exige login
     fs = FileSystem(Disk(o.blocks, o.block_size), o.alloc, seguranca=sec)
+    fs.mem = GerenciadorMemoria(o.ram, o.reserved, o.page_size, sec, o.report_every)
     ssd = SSD(total_blocks=max(8, o.blocks // 4 + 2), pages_per_block=4)
     fs.device, fs.ssd = o.device, ssd
     raid = RAID5(total_disks=o.raid_disks, block_size=o.block_size)
@@ -714,7 +921,7 @@ def main():
             executar(fs, l, ssd, raid, ler_senha)
         except PrivilegeError as e:
             print(e)
-        except (FSError, DiskError, SSDError, RAIDError, SecurityError) as e:
+        except (FSError, DiskError, SSDError, RAIDError, SecurityError, MemoriaError) as e:
             print(f"Erro: {e}")
         except NotImplementedError as e:
             print(f"[PENDENTE] {e}")

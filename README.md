@@ -98,6 +98,25 @@ No RAID, `mv` atualiza os identificadores dos arquivos movidos no arranjo, e `rm
 - `antivirus_scan [caminho]` e `disk_tamper <caminho|--block N> [--data TEXTO]` exigem MODO_KERNEL. O scanner valida hashes de blocos e assinaturas fictícias.
 - O antivírus cobre somente o disco lógico (`disk.blocks`). A camada não inspeciona nem valida conteúdo diretamente no SSD ou nos discos do RAID; o comportamento de SSD/RAID permanece independente.
 
+## Etapa 4: gerenciamento de memória
+
+O shell oferece uma área reservada contígua para processos críticos e deixa o roteamento da região dinâmica preparado para a implementação de memória virtual.
+
+Opções de inicialização: `--ram 8MB`, `--reserved 4MB`, `--page-size 4KB` e `--report-every 5` (zero desliga os relatórios periódicos).
+
+| Comando | Descrição |
+|---|---|
+| `create_process --name N --size 512KB --type critical\|normal` | Criar processo; tipo crítico exige MODO_KERNEL |
+| `terminate_process --name N` | Encerrar processo (usuário comum só encerra seus processos normais) |
+| `ps` | Listar processos, região e dono |
+| `memory_status [--reserved\|--virtual]` | Visão geral ou estado/mapa de uma região |
+| `memory_compact --reserved` | Compactar a região reservada (exige MODO_KERNEL) |
+| `memory_report` | Diagnóstico de fragmentação externa e interna |
+| `translate_address --process N --page K` | Delegar tradução para a memória virtual |
+| `execute_step --process N --instruction "LOAD_DATA Página 2"` | Delegar a instrução para a memória virtual |
+
+Execução do roteiro: `python src/main.py --script exemplos/demo_memoria_reservada.txt`.
+
 ## Estrutura
 ```
 src/
@@ -109,6 +128,9 @@ src/
   ssd.py           SSD: páginas, GC, TRIM e wear leveling
   raid.py          RAID 5: stripes, paridade XOR, falha e recuperação
   diagnostico.py   mapa, fragmentação, compactação
+  processo.py      registro de processos
+  mem_reservada.py alocação contígua da região reservada
+  memoria.py       gerenciador e integração opcional com memória virtual
   main.py          shell de comandos
 exemplos/
   demo.txt         alocação, diagnóstico e compactação
@@ -131,3 +153,4 @@ Veja [CONTRIBUINDO.md](CONTRIBUINDO.md).
 - [x] Escalonadores HDD FCFS, SSTF, SCAN e C-SCAN
 - [x] SSD integrado ao FS (páginas, GC, TRIM, wear leveling)
 - [x] RAID 5 integrado ao FS (paridade, falha e reconstrução XOR)
+- [x] Etapa 4: região reservada, fragmentação externa e compactação
