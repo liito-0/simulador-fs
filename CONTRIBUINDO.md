@@ -10,6 +10,8 @@
 | Giovanna Costa | SSD: páginas, GC, TRIM e wear leveling | `ssd.py` |
 | Giovanna Costa | RAID 5: stripes, paridade XOR, falha e recuperação | `raid.py` |
 | Miguel Monteiro | ACL, criptografia, anti-vírus | `acl.py`, `cripto.py`, `antivirus.py` |
+| Miguel Monteiro | Região reservada, fragmentação externa, compactação, integração e shell de memória | `mem_reservada.py`, `memoria.py`, `processo.py`, `main.py` |
+| Giovanna Costa | Memória virtual: paginação, tradução, page fault, swap, LRU | `mem_virtual.py` |
 
 ## Fluxo com Git
 1. `main` fica sempre funcionando.

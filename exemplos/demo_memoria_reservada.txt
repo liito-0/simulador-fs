@@ -1,0 +1,9 @@
+# Etapa 4 - Região reservada, fragmentação externa e compactação
+login --user root --password root
+create_process --name Kernel_DiskDriver --size 512KB --type critical
+create_process --name Kernel_NetDriver --size 1MB --type critical
+create_process --name Kernel_CryptoEngine --size 512KB --type critical
+terminate_process --name Kernel_NetDriver
+memory_status --reserved
+memory_compact --reserved
+memory_status --reserved
