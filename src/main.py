@@ -130,9 +130,12 @@ AJUDA = """
   ps                               Listar processos
   memory_status [--reserved|--virtual]  Consultar o estado da memória
   memory_compact --reserved        Compactar região reservada (exige MODO_KERNEL)
-  memory_report                    Relatório de fragmentação
-  translate_address --process N --page K
+  memory_report                    Relatório de fragmentação (externa + interna)
+  memory_policy [lru|second_chance|fifo]  Ver/trocar o algoritmo de substituição
+  translate_address --process N --page K   Página lógica -> moldura física
   execute_step --process N --instruction "LOAD_DATA Página 2"
+                                   (LOAD_DATA/READ = leitura, STORE_DATA/WRITE = escrita;
+                                    página ausente -> PAGE FAULT + substituição + swap)
 
   create_process --type critical exige MODO_KERNEL.
   Processos normais e o encerramento dos próprios processos normais
@@ -651,6 +654,7 @@ def executar_memoria(fs, cmd, a):
     comandos = {
         "create_process", "terminate_process", "ps", "memory_status",
         "memory_compact", "memory_report", "translate_address", "execute_step",
+        "memory_policy",
     }
     if cmd not in comandos:
         return False
@@ -764,6 +768,18 @@ def executar_memoria(fs, cmd, a):
         print("\n".join(mem.reservada.mapa()))
         print("Resultado: Fragmentação externa eliminada. Maior bloco contíguo: "
               f"{mem.reservada._kb(mem.reservada.maior_bloco)} KB.")
+        return True
+    if cmd == "memory_policy":
+        if len(a) > 1:
+            raise FSError("Use: memory_policy [lru|second_chance|fifo]")
+        if mem.virtual is None or not hasattr(mem.virtual, "definir_politica"):
+            raise MemoriaError("Memória virtual indisponível.")
+        if a:
+            fs.sec.exigir_kernel("memory_policy")
+            print("\n".join(mem.virtual.definir_politica(a[0])))
+        else:
+            from mem_virtual import NOMES_POLITICA
+            print(f"Algoritmo de substituição atual: {NOMES_POLITICA[mem.virtual.politica]}")
         return True
     if cmd == "memory_report":
         if a:
@@ -900,6 +916,11 @@ def main():
     ap.add_argument("--reserved", type=parse_size_arg, default=4 * 1024 ** 2)
     ap.add_argument("--page-size", type=parse_size_arg, default=4 * 1024)
     ap.add_argument("--report-every", type=int, default=5)
+    ap.add_argument("--swap", type=parse_size_arg, default=None,
+                    help="tamanho do swap/espaço virtual (padrão: 4x a região dinâmica)")
+    ap.add_argument("--replace", default="lru",
+                    choices=["lru", "second_chance", "fifo"],
+                    help="algoritmo de substituição de páginas")
     ap.add_argument("--script")
     ap.add_argument("--root-password", default="root",
                     help="senha inicial do superusuário (padrão: root; troque com 'passwd')")
@@ -910,7 +931,8 @@ def main():
         ap.error("--page-size deve ser positivo e --report-every não negativo.")
     sec = Seguranca(senha_root=o.root_password)   # sem sessão: exige login
     fs = FileSystem(Disk(o.blocks, o.block_size), o.alloc, seguranca=sec)
-    fs.mem = GerenciadorMemoria(o.ram, o.reserved, o.page_size, sec, o.report_every)
+    fs.mem = GerenciadorMemoria(o.ram, o.reserved, o.page_size, sec, o.report_every,
+                                tamanho_swap=o.swap, politica=o.replace)
     ssd = SSD(total_blocks=max(8, o.blocks // 4 + 2), pages_per_block=4)
     fs.device, fs.ssd = o.device, ssd
     raid = RAID5(total_disks=o.raid_disks, block_size=o.block_size)

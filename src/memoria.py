@@ -1,7 +1,7 @@
 """Gerenciamento de memória reservada e roteamento opcional à Parte B.
 
 Contrato esperado para mem_virtual.MemoriaVirtual:
-MemoriaVirtual(tamanho_dinamico, tamanho_pagina, sec=None), com
+MemoriaVirtual(tamanho_dinamico, tamanho_pagina, sec=None[, tamanho_swap]), com
 criar_processo(proc), encerrar_processo(proc), traduzir(proc, pagina),
 executar_passo(proc, instrucao), status() e relatorio_fragmentacao_interna().
 Cada método devolve list[str]. A paginação e sua política pertencem à Parte B.
@@ -18,7 +18,8 @@ except ImportError:
 
 class GerenciadorMemoria:
     def __init__(self, ram_total=8 * 1024 ** 2, reservada=4 * 1024 ** 2,
-                 tamanho_pagina=4 * 1024, sec=None, relatorio_a_cada=5):
+                 tamanho_pagina=4 * 1024, sec=None, relatorio_a_cada=5,
+                 tamanho_swap=None, politica="lru"):
         if not isinstance(ram_total, int) or ram_total <= 0:
             raise MemoriaError("A RAM total deve ser um inteiro positivo em bytes.")
         if not isinstance(reservada, int) or reservada <= 0 or reservada >= ram_total:
@@ -34,10 +35,16 @@ class GerenciadorMemoria:
         self.sec = sec
         self.relatorio_a_cada = relatorio_a_cada
         self.reservada = RegiaoReservada(reservada)
-        self.virtual = (
-            MemoriaVirtual(self.tamanho_dinamico, tamanho_pagina, sec=sec)
-            if MemoriaVirtual is not None else None
-        )
+        self.virtual = None
+        if MemoriaVirtual is not None:
+            extras = {} if tamanho_swap is None else {"tamanho_swap": tamanho_swap}
+            self.virtual = MemoriaVirtual(self.tamanho_dinamico, tamanho_pagina,
+                                          sec=sec, **extras)
+            # a região dinâmica começa logo após a região reservada
+            if hasattr(self.virtual, "base_fisica"):
+                self.virtual.base_fisica = reservada
+            if hasattr(self.virtual, "definir_politica"):
+                self.virtual.definir_politica(politica)
         self.processos = {}
         self.operacoes = 0
         self._proximo_pid = 100

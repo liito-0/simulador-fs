@@ -1,0 +1,23 @@
+# Etapa 4 - Região dinâmica (memória virtual paginada)
+# Execute com RAM dinâmica pequena (4 molduras) para forçar substituição de páginas:
+#   python src/main.py --ram 4112KB --reserved 4MB --page-size 4KB --script exemplos/demo_memoria_virtual.txt
+# Opcional: --replace second_chance | fifo | lru
+login --user root --password root
+create_process --name Kernel_DiskDriver --size 512KB --type critical
+create_process --name App_Navegador --size 10KB --type normal
+create_process --name App_Editor --size 8KB --type normal
+translate_address --process App_Navegador --page 1
+execute_step --process App_Navegador --instruction "LOAD_DATA Página 0"
+execute_step --process App_Navegador --instruction "LOAD_DATA Página 1"
+execute_step --process App_Navegador --instruction "STORE_DATA Página 2"
+translate_address --process App_Navegador --page 1
+execute_step --process App_Editor --instruction "LOAD_DATA Página 0"
+execute_step --process App_Navegador --instruction "LOAD_DATA Página 1"
+execute_step --process App_Editor --instruction "LOAD_DATA Página 1"
+memory_status --virtual
+memory_report
+memory_status
+memory_policy second_chance
+execute_step --process App_Navegador --instruction "LOAD_DATA Página 0"
+terminate_process --name App_Editor
+memory_status --virtual
