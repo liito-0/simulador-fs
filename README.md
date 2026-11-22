@@ -144,7 +144,6 @@ tests/             testes automatizados
 Veja [CONTRIBUINDO.md](CONTRIBUINDO.md).
 
 ## Status
-- **Etapa 2 (E/S, SSD e RAID): entrega parcial.**
 - [x] Árvore + CRUD
 - [x] Disco em blocos
 - [x] Alocação contígua, encadeada e indexada
@@ -154,3 +153,4 @@ Veja [CONTRIBUINDO.md](CONTRIBUINDO.md).
 - [x] SSD integrado ao FS (páginas, GC, TRIM, wear leveling)
 - [x] RAID 5 integrado ao FS (paridade, falha e reconstrução XOR)
 - [x] Etapa 4: região reservada, fragmentação externa e compactação
+- [x] Etapa 4: memória virtual (paginação, tradução, page fault, swap, LRU/Segunda Chance/FIFO)
