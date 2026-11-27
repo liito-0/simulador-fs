@@ -51,7 +51,8 @@ class GerenciadorMemoria:
         self._relatorio_pendente = []
         self._saida_virtual_pendente = []
 
-    def criar_processo(self, nome, tamanho, tipo, dono):
+    def criar_processo(self, nome, tamanho, tipo, dono, burst=None, prioridade=0,
+                       syscalls=None, referencias_paginas=None, tempo_chegada=0):
         self._saida_virtual_pendente = []
         if tipo not in ("critical", "normal"):
             raise MemoriaError("O tipo de processo deve ser 'critical' ou 'normal'.")
@@ -59,7 +60,18 @@ class GerenciadorMemoria:
             raise MemoriaError(f"Já existe um processo chamado '{nome}' na memória.")
         if not isinstance(tamanho, int) or tamanho <= 0:
             raise MemoriaError("O tamanho do processo deve ser um inteiro positivo em bytes.")
-        proc = Processo(self._proximo_pid, nome, tamanho, tipo, dono)
+        proc = Processo(
+            self._proximo_pid,
+            nome,
+            tamanho,
+            tipo,
+            dono,
+            burst=burst,
+            prioridade=prioridade,
+            syscalls=list(syscalls or []),
+            referencias_paginas=list(referencias_paginas or []),
+            tempo_chegada=tempo_chegada,
+        )
         if tipo == "critical":
             try:
                 self.reservada.alocar(nome, tamanho)
@@ -78,6 +90,7 @@ class GerenciadorMemoria:
             self._saida_virtual_pendente = self.virtual.criar_processo(proc)
         self._proximo_pid += 1
         self.processos[nome] = proc
+        proc.aceitar()
         if self.sec is not None:
             self.sec.auditar("PROC_CRIADO", f"{nome} (pid {proc.pid}, tipo {tipo})")
         self._operacao_concluida()

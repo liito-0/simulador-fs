@@ -10,6 +10,8 @@ from raid import RAID5, RAIDError
 from seguranca import Seguranca, SecurityError, AuthError, PrivilegeError
 from memoria import GerenciadorMemoria
 from mem_reservada import MemoriaError
+from processo import ProcessoError
+from syscall import Syscall, SyscallError
 import antivirus
 import acl
 
@@ -123,9 +125,11 @@ AJUDA = """
   antivirus_scan [caminho]         Varredura (exige MODO_KERNEL)
   disk_tamper <caminho|--block N> [--data TEXTO] (exige MODO_KERNEL)
 
-[10] GERENCIAMENTO DE MEMÓRIA
+[10] GERENCIAMENTO DE MEMÓRIA E PROCESSOS
 ---------------------------------------------------------------
   create_process --name N --size 512KB --type critical|normal
+                 [--burst 8] [--priority 1] [--arrival 0]
+                 [--page 0] [--syscall read_disk:3:4]
   terminate_process --name N       Encerrar processo
   ps                               Listar processos
   memory_status [--reserved|--virtual]  Consultar o estado da memória
@@ -176,6 +180,36 @@ def pop_flag(args, *nomes):
     achou = any(n in args for n in nomes)
     args[:] = [a for a in args if a not in nomes]
     return achou
+
+
+def pop_all_opt(args, nome):
+    valores = []
+    while nome in args:
+        i = args.index(nome)
+        if i + 1 >= len(args):
+            raise FSError(f"{nome} precisa de um valor.")
+        valores.append(args[i + 1])
+        del args[i:i + 2]
+    return valores
+
+
+def parse_syscalls(valores):
+    syscalls = []
+    for valor in valores:
+        partes = valor.rsplit(":", 2)
+        if len(partes) != 3:
+            raise SyscallError(
+                "Syscall inválida: use tipo:instante:duracao "
+                "(ex.: read_disk:3:4)."
+            )
+        tipo, disparo, duracao = partes
+        try:
+            syscall = Syscall(tipo, int(disparo), int(duracao))
+        except ValueError:
+            raise SyscallError("Instante e duração da syscall devem ser inteiros.")
+        syscall.validar()
+        syscalls.append(syscall)
+    return syscalls
 
 
 def mostrar_io(fs, inicio, inicio_ssd):
@@ -663,15 +697,41 @@ def executar_memoria(fs, cmd, a):
         nome = pop_opt(a, "--name")
         tamanho = pop_opt(a, "--size")
         tipo = pop_opt(a, "--type")
+        burst_texto = pop_opt(a, "--burst")
+        prioridade_texto = pop_opt(a, "--priority")
+        chegada_texto = pop_opt(a, "--arrival")
+        paginas_texto = pop_all_opt(a, "--page")
+        syscalls_texto = pop_all_opt(a, "--syscall")
         if a or nome is None or tamanho is None or tipo is None:
-            raise FSError("Use: create_process --name N --size 512KB --type critical|normal")
+            raise FSError(
+                "Use: create_process --name N --size 512KB --type critical|normal "
+                "[--burst 8] [--priority 1] [--syscall read_disk:3:4]"
+            )
         try:
             bytes_tamanho = parse_size(tamanho)
         except FSError as erro:
             raise MemoriaError(str(erro))
+        try:
+            burst = int(burst_texto) if burst_texto is not None else None
+            prioridade = int(prioridade_texto) if prioridade_texto is not None else 0
+            chegada = int(chegada_texto) if chegada_texto is not None else 0
+            referencias = [int(pagina) for pagina in paginas_texto]
+        except ValueError:
+            raise FSError("Burst, prioridade, chegada e páginas devem ser inteiros.")
+        syscalls = parse_syscalls(syscalls_texto)
         if tipo == "critical":
             fs.sec.exigir_kernel("create_process (critical)")
-        proc = mem.criar_processo(nome, bytes_tamanho, tipo, fs.sec.efetivo.nome)
+        proc = mem.criar_processo(
+            nome,
+            bytes_tamanho,
+            tipo,
+            fs.sec.efetivo.nome,
+            burst=burst,
+            prioridade=prioridade,
+            syscalls=syscalls,
+            referencias_paginas=referencias,
+            tempo_chegada=chegada,
+        )
         if proc.tipo == "critical":
             inicio, fim = mem.reservada.alocacoes[proc.nome]
             print("Alocado de forma contígua na Área Reservada: "
@@ -707,13 +767,15 @@ def executar_memoria(fs, cmd, a):
     if cmd == "ps":
         if a:
             raise FSError("Use: ps")
-        print(f"{'PID':<6} {'NOME':<24} {'TIPO':<10} {'TAMANHO':<12} "
-              f"{'REGIÃO':<20} DONO")
+        print(f"{'PID':<6} {'NOME':<24} {'TIPO':<10} {'ESTADO':<12} "
+              f"{'BURST':<10} {'PRIO':<6} {'TAMANHO':<12} {'REGIÃO':<20} DONO")
         for proc in sorted(mem.processos.values(), key=lambda p: p.pid):
             regiao = "Área Reservada" if proc.tipo == "critical" else "Memória Virtual"
             tamanho = f"{mem.reservada._kb(proc.tamanho)} KB"
-            print(f"{proc.pid:<6} {proc.nome:<24} {proc.tipo:<10} "
-                  f"{tamanho:<12} {regiao:<20} {proc.dono}")
+            burst = f"{proc.burst_restante}/{proc.burst}"
+            print(f"{proc.pid:<6} {proc.nome:<24} {proc.tipo:<10} {proc.estado:<12} "
+                  f"{burst:<10} {proc.prioridade:<6} {tamanho:<12} "
+                  f"{regiao:<20} {proc.dono}")
         return True
     if cmd == "memory_status":
         reservada = pop_flag(a, "--reserved")
@@ -943,7 +1005,8 @@ def main():
             executar(fs, l, ssd, raid, ler_senha)
         except PrivilegeError as e:
             print(e)
-        except (FSError, DiskError, SSDError, RAIDError, SecurityError, MemoriaError) as e:
+        except (FSError, DiskError, SSDError, RAIDError, SecurityError,
+                MemoriaError, ProcessoError, SyscallError) as e:
             print(f"Erro: {e}")
         except NotImplementedError as e:
             print(f"[PENDENTE] {e}")
